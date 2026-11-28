@@ -9,8 +9,10 @@
  * The run pins the folder ~/.local/share/sieun-pi-apps-chat/current points at when it starts (or --release), a clean build of one main commit
  * that scripts/release-apps-chat.mjs made, and runs everything with that folder as its working directory, so a release's prune keeps it.
  * It writes nothing into that folder and copies no checkout. The overlay, the files whose source replaces the release's, is:
- * 1. every apps/chat file that differs between the release's commit and HEAD, read from HEAD as committed (git diff <release sha> HEAD);
- * 2. then each --files entry, a path relative to apps/chat read from the checkout's working tree as it is now, or path=/absolute/source.
+ * 1. every file of apps/chat and of legacy/prime/user-history/src, which the server imports and a release holds too, that differs between
+ *    the release's commit and HEAD, read from HEAD as committed (git diff <release sha> HEAD);
+ * 2. then each --files entry, a path relative to apps/chat read from the checkout's working tree as it is now, or path=/absolute/source;
+ *    a legacy file is ../../legacy/prime/user-history/src/<file>.
  * Other sessions' uncommitted edits stay out unless you name their file in --files, so name only files whose working-tree state is yours.
  * Server code and node --test files load through a Node module hook (spec-clean/overlay.mjs). A Playwright run serves the release's web/dist,
  * or, when the overlay has a web/ file, a vite build of the release's web with those files swapped in, made in the run's own folder.
@@ -52,22 +54,30 @@ const git = args => {
   return result.stdout;
 };
 
+/**
+ * Today's chat's source, which apps/chat's server imports as it is and a release holds beside apps/chat (scripts/release-apps-chat.mjs
+ * `archive`). Until 11-28 the overlay took only apps/chat, so a commit that added a legacy file a server file imports would have failed
+ * every run until its release.
+ */
+const LEGACY_SRC = "legacy/prime/user-history/src";
+
 /** The overlay as path relative to apps/chat -> source file: HEAD's committed changes since the release, then the --files entries. */
 function overlay(sha, files, runDir) {
   const map = new Map();
-  const changed = git(["diff", "--name-only", "--no-renames", "--diff-filter=AMT", sha, "HEAD", "--", "apps/chat"]).split("\n").filter(Boolean);
+  const changed = git(["diff", "--name-only", "--no-renames", "--diff-filter=AMT", sha, "HEAD", "--", "apps/chat", LEGACY_SRC]).split("\n").filter(Boolean);
   for (const file of changed) {
-    const path = file.slice("apps/chat/".length);
-    const copy = join(runDir, "head", path);
+    const inApp = file.startsWith("apps/chat/");
+    const path = inApp ? file.slice("apps/chat/".length) : join("../..", file);
+    const copy = inApp ? join(runDir, "head", path) : join(runDir, "head-legacy", file);
     mkdirSync(dirname(copy), { recursive: true });
     writeFileSync(copy, git(["show", `HEAD:${file}`]));
     map.set(path, copy);
   }
   // Playwright reads a test file's module type from the package.json above it.
-  if (changed.length) writeFileSync(join(runDir, "head/package.json"), '{ "type": "module" }\n');
+  if (changed.some(file => file.startsWith("apps/chat/"))) writeFileSync(join(runDir, "head/package.json"), '{ "type": "module" }\n');
   for (const entry of files) {
     const [path, source = join(repo, "apps/chat", path)] = entry.split("=");
-    if (isAbsolute(path) || path.startsWith("..")) throw new Error(`--files takes paths relative to apps/chat: ${path}`);
+    if (isAbsolute(path) || (path.startsWith("..") && !join("apps/chat", path).startsWith(`${LEGACY_SRC}/`))) throw new Error(`--files takes paths relative to apps/chat, or ../../${LEGACY_SRC}/<file>: ${path}`);
     if (!existsSync(source)) throw new Error(`--files ${entry}: ${source} does not exist`);
     map.set(path, resolve(source));
   }

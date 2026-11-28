@@ -55,6 +55,8 @@ export interface DutyRow {
     /** The measure taken again once the run's job ended. */
     after?: { at?: number; verdict?: string; summary?: string; metrics?: Record<string, { value?: number }> };
     flagged?: { handOff?: true; sig?: string }[];
+    /** The keys of the items the run gave the job it names (server/duty-items.ts); a run beside a job that gave it nothing has none. */
+    given?: string[];
   }[];
   schedule?: { kind: string; at?: string; minutes?: number }; nextAt?: number | null;
 }

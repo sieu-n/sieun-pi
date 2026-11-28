@@ -16,7 +16,9 @@ import { snoozed, waitingAsks } from "../web/src/lib/api/shared/snooze.ts";
 import { newestAskFirst } from "../web/src/lib/api/shared/board-lists.ts";
 import { boardDelta, boardKey, boardStep } from "../web/src/lib/api/shared/board-delta.ts";
 import { CHECK_IN_DUTY_ID, morningTime, upsertDuty, verdictMetrics, type AfterMeasure, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
-import { asAfter, clearPrecheck, fixesOn, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
+import { asAfter, clearPrecheck, detailItems, fixesOn, measure, measureAfter, newItemsText, replacedSection, runStamp, type PrecheckLaunch } from "./duty-run.ts";
+import { beside, givenTo, heldPastLimit, itemKey, runKeys, unseen, type RunItems } from "./duty-items.ts";
+import { sentMessages } from "./timeline.ts";
 import { closedFixes } from "../web/src/lib/api/shared/duty-fixes.ts";
 import { closedUntil, pushMisses } from "../../../legacy/prime/user-history/src/duty-push.ts";
 import { accountSlot, poolDir, pooledProviders, readPoolStatus, threadKey } from "../../../legacy/prime/user-history/src/chat-pool.ts";
@@ -917,25 +919,36 @@ export class Boards {
     // 11-23 such a run skipped its precheck too: the fable auditor's 16:06Z sweep job of 11-22 waited 3 h 44 min for a Fable account, and every
     // due sweep behind it recorded "skipped" and measured nothing.
     const lastJob = [...(before.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).find(run => run.job)?.job;
-    const busy = lastJob && !resume?.job && this.jobBusy(lastJob, working) ? lastJob : undefined;
+    let busy = lastJob && !resume?.job && this.jobBusy(lastJob, working) ? lastJob : undefined;
     const dir = join(this.dir(chat), "duties");
     const thread = this.threadOf(chat);
-    const { record, brief, heldBy } = await measure({
+    const measured = await measure({
       duty, chat: { id: chat, name: this.nameOf(chat) }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
       liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, now: at, log: this.log, signal: this.stopping.signal,
       ...(resume ? { resume: resume.launch } : {}),
       launched: launch => this.save(chat, Boards.pend(this.file(chat), dutyId, { mode: "run", at, trigger, launch })),
     });
+    const { record, heldBy, items } = measured;
+    let { brief } = measured;
     if (busy) {
-      const beside = await this.besideBusyJob(chat, duty, busy, record, brief, heldBy.includes(busy.id));
-      record.summary += beside.words;
-      // A job that never read this run's brief was handed none of its sigs, so the next run hands them out again.
-      if (!beside.steered && record.flagged) record.flagged = [];
-      // The run names the job it measured beside, so the job's after-job measure lands on it too (`afterJob`) and the card reads the state
-      // after the job's work. On 11-23 the fable auditor's 10:06 and 13:06 KST sweeps handed their briefs to the 07:06 job, which ended at
-      // 15:07 with findings_unposted 0, and d1 still read missed 10, 2 runs in a row, until the next sweep.
-      record.job = { id: busy.id, name: busy.name };
-    } else if (brief) {
+      const run = { brief, holds: heldBy.includes(busy.id), items, runs: before.runs[dutyId] ?? [], ...(measured.findingsFile ? { findingsFile: measured.findingsFile } : {}) };
+      const done = await this.besideBusyJob(chat, duty, busy, record, run);
+      record.summary += done.words;
+      if (done.replaced !== undefined) {
+        record.replaced = { id: busy.id, name: busy.name };
+        brief = `${brief}\n\n${done.replaced}`;
+        busy = undefined;
+      } else {
+        if (done.given.length) record.given = done.given;
+        // A job that was given none of this run's items was handed none of its sigs, so the next run hands them out again.
+        if (record.flagged) record.flagged = record.flagged.filter(slice => done.given.includes(itemKey(slice)));
+        // The run names the job it measured beside, so the job's after-job measure lands on it too (`afterJob`) and the card reads the state
+        // after the job's work. On 11-23 the fable auditor's 10:06 and 13:06 KST sweeps handed their briefs to the 07:06 job, which ended at
+        // 15:07 with findings_unposted 0, and d1 still read missed 10, 2 runs in a row, until the next sweep.
+        record.job = { id: busy.id, name: busy.name };
+      }
+    }
+    if (!busy && brief) {
       // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain.
       const cwd = duty.precheck.cwd || this.threads.thread(thread)?.cwd;
       // A run resumed after a stop that came after its job was made submits to that job, and the request id lands the brief once.
@@ -946,6 +959,7 @@ export class Boards {
       });
       if (job) {
         record.job = job;
+        record.given = runKeys(items);
         void this.reportDutyJob(chat, duty, job.id, job.submission);
       }
     }
@@ -955,9 +969,9 @@ export class Boards {
     // The last job's runs with no after-job measure yet take this run's measure, as Prime's `launch` writes it, unless that job still works
     // and this run started none, since then the job's own end measures them (`afterJob`).
     const newestJob = (after.runs[dutyId] ?? []).filter(run => run.job).sort((a, b) => b.at - a.at)[0]?.job;
-    const measured = asAfter(record);
-    if (newestJob && measured && !busy && (record.job || !working.has(newestJob.name))) {
-      landAfter(after.runs[dutyId] ?? [], newestJob.id, measured);
+    const reading = asAfter(record);
+    if (newestJob && reading && !busy && (record.job || !working.has(newestJob.name))) {
+      landAfter(after.runs[dutyId] ?? [], newestJob.id, reading);
     }
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
     // Only this run's own precheck entry is cleared, with its files, so an entry another measure wrote keeps its files.
@@ -994,7 +1008,8 @@ export class Boards {
    * interval old, or at once when a window it misses on rolled over (`pushMisses`), when no job works on it: its last duty job ended and has its
    * after-job measure, no duty job waits to start, and no fix step of a missed metric has a live job or waits on an open For you todo. Until
    * 11-24 a red sw factory duty waited for its next daily slot: in the week to 11-23 22:30Z sw factory ran 0 push runs and Prime 2,549
-   * (~/work/duty-and-nudge/part2-practice.md).
+   * (~/work/duty-and-nudge/part2-practice.md). A duty job that still works but held the duty past its stuck limit holds no push
+   * (`heldPastLimit`): d17's job passed 12 h at 09:10Z on 11-26 and the next run of any kind came 14.5 h later.
    */
   private async pushDuty(chat: string, duty: Duty, now: number): Promise<void> {
     const key = `${chat}/${duty.id}`;
@@ -1007,10 +1022,18 @@ export class Boards {
       const misses = pushMisses(runs, new Set(verdictMetrics(duty.metrics).map(metric => metric.key)), this.checkIn(chat).everyMs, now);
       if (!misses?.length) return;
       const last = runs.find(run => run.job)?.job;
-      if (last && runs.some(run => run.job?.id === last.id && !run.after)) return;
       const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
-      if (last && this.jobBusy(last, working)) return;
-      const fixes = fixesOn(await this.board(chat), duty.id, misses, job => working.has(job));
+      if (last && this.jobBusy(last, working)) {
+        // A job that still works holds the push, unless it held the duty past its stuck limit and waits for no model account: the push run
+        // then stops and replaces it (`besideBusyJob`), or resets its limit when it reads the number closer to its target.
+        const stuck = heldPastLimit(duty.schedule, runsOfJob(runs, last.id).sort((a, b) => a.at - b.at), now)
+          && await this.answeredOnce(last.id).catch(() => false) && (await this.poolWaitSince(last.id).catch(() => 0)) === null;
+        if (!stuck) return;
+      } else if (last && runs.some(run => run.job?.id === last.id && !run.after)) return;
+      // A metric that counts flagged items has a fix only while an open step names each item its newest run counted (`fixesOn`), so a live
+      // step for one vendor line no longer holds the push for the lines nobody owns.
+      const counted = runs.find(run => run.verdict === "missed")?.owners ?? {};
+      const { fixes } = fixesOn(await this.board(chat), duty.id, misses, job => working.has(job), Object.fromEntries(Object.entries(counted).map(([key, owners]) => [key, owners.map(owner => owner.item)])));
       if (Object.values(fixes).some(fix => fix.live) || misses.every(miss => fixes[miss]?.hold !== undefined)) return;
       this.log(`duty ${chat.slice(0, 8)}/${duty.id}: red on ${misses.join(", ")} with no job at work on it; a push run starts`);
       void this.runDuty(chat, duty, "push");
@@ -1126,33 +1149,91 @@ export class Boards {
   }
 
   /**
-   * What a run does beside the duty's last job that still works, and the words it adds to the run's summary. A job with no model answer yet
-   * waits for an account and has read nothing, so it keeps its place in pi-pool's line: a due run steers this run's brief into it, which it
-   * reads after its first answer, and a run with nothing due stops it, unless the job holds a hand-off sig this run flags again (`holds`): on
-   * 11-26 Crawler guy's d7 verify run stopped the waiting job that held d7/n, and since the sig read as handed, no job ever added the n. A job
-   * that answered works its brief, and the run leaves it alone; its summary says since when it waits when pi-pool parks its tree
-   * (`poolWaitSince`). `steered` says whether the job got this run's brief.
+   * What a run does beside the duty's last job that still works, and the words it adds to the run's summary. `given` holds the keys of the
+   * items the job got from this run, and `replaced` the section a new job's brief gets when the run stopped this one.
+   *
+   * A job with no model answer yet waits for an account and has read nothing, so it keeps its place in pi-pool's line: a due run steers this
+   * run's brief into it, which it reads after its first answer, and a run with nothing due stops it, unless the job holds a hand-off sig this
+   * run flags again (`holds`): on 11-26 Crawler guy's d7 verify run stopped the waiting job that held d7/n, and since the sig read as handed,
+   * no job ever added the n.
+   *
+   * A job that answered works its brief (`beside` in duty-items.ts). The run steers it with the flagged items and missed metrics no run gave
+   * it yet, once each. A due run stops and replaces it once it held the duty past its stuck limit with no missed number closer to its target,
+   * unless pi-pool holds its tree for a model account (`poolWaitSince`), where a new job would wait in the same line. Until 11-28 such a run
+   * said "so this run started none" and gave the job nothing: one job held devops guy's d17 for 62 h and 7 runs.
    */
-  private async besideBusyJob(chat: string, duty: Duty, job: { id: string; name: string }, record: DutyRunRecord, brief: string | null, holds: boolean): Promise<{ words: string; steered: boolean }> {
-    const waits = !(await this.answeredOnce(job.id).catch(() => true));
-    if (!waits) {
-      const since = await this.poolWaitSince(job.id).catch(() => null);
-      return { steered: false, words: since === null ? `; its job ${job.name} still works, so this run started none`
-        : `; its job ${job.name} is waiting for a model account since ${new Date(since + OWNER_ZONE_OFFSET_MS).toISOString().slice(11, 16)} KST, so this run started none` };
-    }
-    try {
-      if (!brief && holds) return { steered: false, words: `; its job ${job.name} still waits for a model account and holds this run's hand-offs, so this run left it` };
-      if (!brief) {
-        await this.host.abort(job.id);
-        return { steered: false, words: `; stopped its job ${job.name}, which still waited for a model account, since nothing is due` };
+  private async besideBusyJob(chat: string, duty: Duty, job: { id: string; name: string }, record: DutyRunRecord,
+    run: { brief: string | null; holds: boolean; items: RunItems; findingsFile?: string; runs: readonly DutyRunRecord[] }): Promise<{ words: string; given: string[]; replaced?: string }> {
+    const entry = { kind: "agent.message" as const, data: { from: chat, via: `duty ${duty.id}` } };
+    const requestId = `duty-handoff:${job.id}:${record.at}`;
+    if (!(await this.answeredOnce(job.id).catch(() => true))) {
+      try {
+        if (!run.brief && run.holds) return { given: [], words: `; its job ${job.name} still waits for a model account and holds this run's hand-offs, so this run left it` };
+        if (!run.brief) {
+          await this.host.abort(job.id);
+          return { given: [], words: `; stopped its job ${job.name}, which still waited for a model account, since nothing is due` };
+        }
+        const text = `A newer ${duty.name} run measured while you waited for a model account: ${record.summary}. Work from the brief below instead of your first brief, since its precheck is newer.\n\n${run.brief}`;
+        await this.host.submit(job.id, { text, whenBusy: "steer", requestId, entry });
+        return { given: runKeys(run.items), words: `; its job ${job.name} still waits for a model account and got this run's brief` };
+      } catch (error) {
+        this.log(`duty ${chat.slice(0, 8)}/${duty.id}: reaching its waiting job ${job.name} failed: ${String(error)}`);
+        return { given: [], words: `; its job ${job.name} still waits for a model account, and reaching it failed` };
       }
-      const text = `A newer ${duty.name} run measured while you waited for a model account: ${record.summary}. Work from the brief below instead of your first brief, since its precheck is newer.\n\n${brief}`;
-      await this.host.submit(job.id, { text, whenBusy: "steer", requestId: `duty-handoff:${job.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
-      return { steered: true, words: `; its job ${job.name} still waits for a model account and got this run's brief` };
-    } catch (error) {
-      this.log(`duty ${chat.slice(0, 8)}/${duty.id}: reaching its waiting job ${job.name} failed: ${String(error)}`);
-      return { steered: false, words: `; its job ${job.name} still waits for a model account, and reaching it failed` };
     }
+    const since = await this.poolWaitSince(job.id).catch(() => null);
+    const state = since === null ? "still works" : `is waiting for a model account since ${new Date(since + OWNER_ZONE_OFFSET_MS).toISOString().slice(11, 16)} KST`;
+    const jobRuns = runsOfJob(run.runs, job.id).sort((a, b) => a.at - b.at);
+    const fresh = unseen(run.items, await givenTo(jobRuns, detail => detailItems(detail, duty.id)));
+    const act = beside({ now: record.at, schedule: duty.schedule, jobRuns, record, due: run.brief !== null, waitsForAccount: since !== null, fresh: fresh.keys.length });
+    if (act.do === "replace") {
+      const report = await this.retireJob(chat, duty.id, job);
+      return { given: [], replaced: replacedSection({ job: job.name, heldMs: act.heldMs, report }),
+        words: `; replaced its job ${job.name}, which held the duty ${Math.round(act.heldMs / 3_600_000)} h with no missed number closer to its target` };
+    }
+    if (act.do === "steer") {
+      try {
+        await this.host.submit(job.id, { text: newItemsText({ duty, record, fresh, ...(run.findingsFile ? { findingsFile: run.findingsFile } : {}) }), whenBusy: "steer", requestId, entry });
+        return { given: fresh.keys, words: `; its job ${job.name} ${state} and got ${fresh.keys.length} new item${fresh.keys.length === 1 ? "" : "s"} of this run, so this run started none` };
+      } catch (error) {
+        this.log(`duty ${chat.slice(0, 8)}/${duty.id}: handing its job ${job.name} ${fresh.keys.length} new items failed: ${String(error)}`);
+      }
+    }
+    return { given: [], words: `; its job ${job.name} ${state}, so this run started none` };
+  }
+
+  /**
+   * Stops a duty job that held its duty past its stuck limit, for good, and returns its last report for the job that replaces it: the wakes
+   * it or its subagents set are dropped, so none starts it again, its turn is stopped, and its thread is archived, which ends its subagents
+   * in pi-host (`set` with archived). A step that fails is logged and the replacement goes on, as Prime's runner queues the archive.
+   */
+  private async retireJob(chat: string, dutyId: string, job: { id: string; name: string }): Promise<string> {
+    const report = await this.lastSaid(job.id).catch(() => "");
+    const wakes = this.db.wakes.list().filter(({ wake }) => wakeTarget(wake.session).thread === job.id);
+    for (const { id } of wakes) void this.db.wakes.remove(id);
+    try {
+      await this.host.abort(job.id);
+      this.threads.put(await this.host.set(job.id, { archived: true }));
+    } catch (error) {
+      this.log(`duty ${chat.slice(0, 8)}/${dutyId}: stopping its replaced job ${job.name} failed: ${String(error)}`);
+    }
+    this.accountWaits.delete(`${chat}/${dutyId}`);
+    this.log(`duty ${chat.slice(0, 8)}/${dutyId}: replaced its job ${job.name}${wakes.length ? ` and dropped its ${wakes.length} wake${wakes.length === 1 ? "" : "s"}` : ""}`);
+    return report;
+  }
+
+  /** The last thing a job said among its newest 60 entries: its newest send_message text, else the text of its newest answer. */
+  private async lastSaid(job: string): Promise<string> {
+    const { entries } = await this.host.entries(job, { limit: 60, lean: true });
+    const sent = sentMessages([...entries].reverse()).at(-1);
+    if (sent) return sent.text;
+    for (const entry of entries) {
+      const message = entry.model?.[0];
+      if (message?.role !== "assistant") continue;
+      const text = typeof message.content === "string" ? message.content : message.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n\n");
+      if (text.trim()) return text;
+    }
+    return "";
   }
 
   /** Whether a duty job got a model answer that is no error; pi-pool's "the token hook gave no token" errors are no answer (`readAccountWait`). */

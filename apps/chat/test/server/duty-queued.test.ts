@@ -3,6 +3,9 @@
  * `Duties.launch` does. A job with no model answer yet gets the newer run's brief, or is stopped when nothing is due: on 11-22 the fable
  * auditor's 16:06Z sweep job waited 3 h 44 min for a Fable account and every sweep behind it skipped its precheck. The card says since when the
  * job waits. Such a run names the job, so the job's after-job measure lands on it too and the card reads the state after the job's work.
+ * A job that answered gets each flagged item and missed metric it was not given, once, and a due run stops and replaces one that held the
+ * duty past its stuck limit with no missed number closer to its target, unless it waits for a model account: from 11-25 21:10Z one job held
+ * devops guy's d17 for 62 h while 7 runs started none and gave it nothing.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duty-queued.test.ts
  */
 import assert from "node:assert/strict";
@@ -49,6 +52,13 @@ const noN = (id: string) => {
   const base = duty(id, 100);
   return { ...base, precheck: { ...base.precheck, command: base.precheck.command.map(part => part.replace("{ n: 1, ", "{ ")) } };
 };
+/** A duty like `duty` whose precheck writes the output kept in `<id>.out` in its folder. */
+const flagging = (id: string) => {
+  const base = duty(id);
+  return { ...base, precheck: { ...base.precheck, command: ["node", "-e", `const fs = require("fs"), path = require("path");
+fs.writeFileSync(process.env.OUTPUT_FILE, fs.readFileSync(path.join(process.cwd(), "${id}.out"), "utf8"));`] } };
+};
+const EVENTS = { kind: "line_over_pace", item: "posthog//Events", excerpt: "posthog Events: 1,256,967 events a cycle, 126% of 1,000,000 included" };
 const missed = (id: string, at: number, job: string): DutyRunRecord => ({
   duty: id, at, slot: at, trigger: "schedule", ms: 900, verdict: "missed", metrics: { up: { value: 90, target: 99, op: ">=", met: false } }, summary: "up 90",
   job: { id: job, name: `Duty ${id} job` },
@@ -57,7 +67,15 @@ const said = (job: string): string[] => (s.host as FixtureHost).threadsById.get(
   entry.kind === "agent.message" ? (entry.model ?? []).flatMap(message => message.role !== "user" ? [] : typeof message.content === "string" ? [message.content]
     : message.content.flatMap(part => part.type === "text" ? [part.text] : [])) : []);
 const aborted: string[] = [];
-const answer = (stopReason: "stop" | "error") => ({ kind: "pi.assistant", model: [{ role: "assistant" as const, content: [], stopReason, timestamp: now }] });
+const answer = (stopReason: "stop" | "error", text?: string) =>
+  ({ kind: "pi.assistant", model: [{ role: "assistant" as const, content: text ? [{ type: "text" as const, text }] : [], stopReason, timestamp: now }] });
+/** A job that answered once and still runs a turn, started `hours` ago; a stop of its turn lands in `aborted`. */
+const working = (id: string, duty: string, hours: number, text?: string) => {
+  const thread = (s.host as FixtureHost).addThread({ id, name: `Duty ${duty} job`, status: "running", createdAt: now - hours * HOUR });
+  (s.host as FixtureHost).append(thread, 1, answer("stop", text));
+  thread.running.set(1, { stop: () => aborted.push(id) });
+  return thread;
+};
 
 before(async () => {
   s = await start();
@@ -88,19 +106,36 @@ before(async () => {
   const parked = host.addThread({ id: "job-parked", name: "Duty d6 job", status: "sleeping", createdAt: now - 3 * HOUR });
   host.append(parked, 1, answer("stop"));
   parked.running.set(1, { stop: () => aborted.push("job-parked") });
+  // d8: its job answered and works, an hour old. d9: its job started 13 h ago, past a daily duty's 12 h, and its turn ended on a wake it set,
+  // as d17's job slept on a wake for 2026-11-28T03:00Z.
+  // d10: as old, and pi-pool parks its tree for an account. d11: as old, and a run an hour ago read its number closer to the target.
+  working("job-works", "d8", 1);
+  host.append(host.addThread({ id: "job-stuck", name: "Duty d9 job", createdAt: now - 13 * HOUR }), 1, answer("stop", "up is 90. I wait for the vendor to answer."));
+  working("job-old-parked", "d10", 13);
+  working("job-moving", "d11", 13);
+  working("job-hung", "d12", 13);
+  for (const id of ["d8", "d9"]) writeFileSync(join(work, `${id}.out`), JSON.stringify({ n: 1, metrics: { up: 90 } }));
+  writeFileSync(join(work, "d12.up"), "90");
   const pool = process.env.PI_POOL_DIR!;
   const fake = JSON.parse(readFileSync(join(pool, "fake-pi-pool.json"), "utf8"));
-  fake.trees["pi-durable:job-parked"] = { priority: "low", pins: {}, current: {}, wait: { anthropic: { account: "claude-limited", slot_at: now / 1000 + 600 } } };
-  writeFileSync(join(pool, "fake-pi-pool.json"), JSON.stringify(fake));
   const state = JSON.parse(readFileSync(join(pool, "state.json"), "utf8"));
-  state.sessions["pi-durable:job-parked"] = { vends: {}, wait: { anthropic: { account: "claude-limited", slot_at: now / 1000 + 600, since: (now - 2 * HOUR) / 1000 } } };
+  for (const job of ["job-parked", "job-old-parked"]) {
+    fake.trees[`pi-durable:${job}`] = { priority: "low", pins: {}, current: {}, wait: { anthropic: { account: "claude-limited", slot_at: now / 1000 + 600 } } };
+    state.sessions[`pi-durable:${job}`] = { vends: {}, wait: { anthropic: { account: "claude-limited", slot_at: now / 1000 + 600, since: (now - 2 * HOUR) / 1000 } } };
+  }
+  writeFileSync(join(pool, "fake-pi-pool.json"), JSON.stringify(fake));
   writeFileSync(join(pool, "state.json"), JSON.stringify(state));
   await s.app.threads.refresh();
+  await s.app.boards.addWake("job-stuck", { on: { kind: "time", at: now + 24 * HOUR }, note: "look at the bill again" });
   await s.app.boards.saveDuties(ids.vent, {
-    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5"), duty("d6"), noN("d7")].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
+    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5"), duty("d6"), noN("d7"), flagging("d8"), flagging("d9"), duty("d10"), duty("d11"), fixable("d12")]
+      .map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
     runs: { d1: [missed("d1", now - HOUR, "job-asleep")], d2: [missed("d2", now - HOUR, "job-queued")], d3: [missed("d3", now - HOUR, "job-done")], d4: [missed("d4", now - HOUR, "job-held")],
       d5: [missed("d5", now - HOUR, "job-d5")], d6: [missed("d6", now - 3 * HOUR, "job-parked")],
-      d7: [{ ...missed("d7", now - HOUR, "job-holds"), flagged: [{ kind: "no_sample_size", excerpt: "add n", handOff: true, sig: "d7/n" }] }] },
+      d7: [{ ...missed("d7", now - HOUR, "job-holds"), flagged: [{ kind: "no_sample_size", excerpt: "add n", handOff: true, sig: "d7/n" }] }],
+      d8: [missed("d8", now - HOUR, "job-works")], d9: [missed("d9", now - 13 * HOUR, "job-stuck")], d10: [missed("d10", now - 13 * HOUR, "job-old-parked")],
+      d11: [{ ...missed("d11", now - HOUR, "job-moving"), metrics: { up: { value: 95, target: 99, op: ">=", met: false } } }, missed("d11", now - 13 * HOUR, "job-moving")],
+      d12: [missed("d12", now - 13 * HOUR, "job-hung")] },
   } as DutyFile);
 });
 after(async () => {
@@ -178,6 +213,46 @@ test("a duty whose job ended runs its precheck and starts a job", async () => {
   assert.equal(modes("d3")[0], "run");
 });
 
+test("a due run stops a job that slept on its own wake past the duty's limit with no move, and starts a new job with its last report", async () => {
+  assert.equal(s.app.boards.wakes("job-stuck", 1).length, 1);
+  await run("d9");
+  await until(() => Promise.resolve(runsOf("d9")), runs => runs.length === 2 && !!runs[0]!.job);
+  const [fresh, older] = runsOf("d9");
+  assert.match(fresh!.summary, /replaced its job Duty d9 job, which held the duty 13 h with no missed number closer to its target$/);
+  assert.deepEqual(fresh!.replaced, { id: "job-stuck", name: "Duty d9 job" });
+  assert.notEqual(fresh!.job!.id, "job-stuck", "the run started a job of its own");
+  assert.deepEqual(fresh!.given, ["metric|up"]);
+  assert.equal((s.host as FixtureHost).threadsById.get("job-stuck")!.row.archived, true, "an archive ends the old job and its subagents in pi-host");
+  assert.equal(s.app.boards.wakes("job-stuck", 1).length, 0, "no wake starts the old job again");
+  const [brief] = said(fresh!.job!.id);
+  assert.match(brief!, /^# The Duty d9 duty of the chat/);
+  assert.match(brief!, /## The job before you\n\nThis run stopped the job "Duty d9 job": it held this duty for 13 h with no missed number closer to its target\./);
+  assert.ok(brief!.includes("> up is 90. I wait for the vendor to answer."), "the new job reads the old job's last report");
+  assert.equal(older!.after?.verdict, "missed", "the old job's run is judged by this run's measure");
+});
+
+test("a tick gives a red duty whose working job held it past the limit a push run, which stops and replaces the job", async () => {
+  await s.app.boards.tick();
+  await until(() => Promise.resolve(runsOf("d12")), runs => runs.length === 2 && !!runs[0]!.job);
+  assert.equal(runsOf("d12")[0]!.trigger, "push", "a daily duty's job is replaced at the first push after 12 h, not at the next day's slot");
+  assert.deepEqual(runsOf("d12")[0]!.replaced, { id: "job-hung", name: "Duty d12 job" });
+  assert.deepEqual(aborted.filter(id => id === "job-hung"), ["job-hung"], "its running turn is stopped");
+  // The same tick pushed neither the job that waits for a model account nor the one that moved its number an hour ago.
+  assert.deepEqual([runsOf("d10").length, (await row("d10")).running, runsOf("d11").length, (await row("d11")).running], [1, false, 2, false]);
+});
+
+test("a job past the limit that waits for a model account, or that moved its number, is not replaced", async () => {
+  const clock = new Date(now - 2 * HOUR + 9 * HOUR).toISOString().slice(11, 16);
+  await run("d10");
+  await until(() => Promise.resolve(runsOf("d10")), runs => runs.length === 2);
+  assert.match(runsOf("d10")[0]!.summary, new RegExp(`its job Duty d10 job is waiting for a model account since ${clock} KST, so this run started none$`));
+  assert.deepEqual(runsOf("d10")[0]!.job, { id: "job-old-parked", name: "Duty d10 job" });
+  await run("d11");
+  await until(() => Promise.resolve(runsOf("d11")), runs => runs.length === 3);
+  assert.match(runsOf("d11")[0]!.summary, /its job Duty d11 job still works, so this run started none$/);
+  assert.deepEqual(aborted.filter(id => id === "job-old-parked" || id === "job-moving"), []);
+});
+
 test("a job that answered once and whose subagent pi-pool parks for an account reads as waiting since the pool's wait began", async () => {
   const clock = new Date(now - 2 * HOUR + 9 * HOUR).toISOString().slice(11, 16);
   await run("d6");
@@ -244,6 +319,35 @@ test("the job's after-job measure lands on every run that handed it a brief, so 
   assert.equal(d5.last?.afterJob, true);
   assert.equal(d5.last?.streak, 0);
   assert.equal(d5.card.streak, 0);
+});
+
+test("a job that answered and works gets a run's new flagged item once, and the run records what it gave", async () => {
+  // d17 on 11-27: the run flagged PostHog Events for the first time beside a job that worked, and said "so this run started none".
+  await run("d8");
+  await until(() => Promise.resolve(runsOf("d8")), runs => runs.length === 2);
+  assert.match(runsOf("d8")[0]!.summary, /its job Duty d8 job still works, so this run started none$/, "a run with nothing new gives the job nothing");
+  assert.deepEqual(said("job-works"), []);
+  writeFileSync(join(work, "d8.out"), JSON.stringify({ n: 1, metrics: { up: 90 }, flagged: [EVENTS] }));
+  await until(() => row("d8"), d8 => !d8.running);
+  await run("d8");
+  await until(() => Promise.resolve(runsOf("d8")), runs => runs.length === 3);
+  const [gave] = runsOf("d8");
+  assert.match(gave!.summary, /its job Duty d8 job still works and got 1 new item of this run, so this run started none$/);
+  assert.deepEqual(gave!.given, ["line_over_pace|posthog//Events"]);
+  assert.deepEqual(gave!.job, { id: "job-works", name: "Duty d8 job" });
+  const steers = said("job-works");
+  assert.equal(steers.length, 1);
+  assert.match(steers[0]!, /^The Duty d8 run of \d\d:\d\d KST measured while you work: up 90 .*It found 1 flagged item that your brief and the runs since did not give you\./);
+  assert.ok(steers[0]!.includes("posthog Events: 1,256,967 events a cycle"));
+  assert.ok(steers[0]!.includes(gave!.detail!.replace(/\.json$/, ".findings.md")), "the steer names the run's findings file");
+  // The next run flags the same item: the job has it.
+  await until(() => row("d8"), d8 => !d8.running);
+  await run("d8");
+  await until(() => Promise.resolve(runsOf("d8")), runs => runs.length === 4);
+  assert.match(runsOf("d8")[0]!.summary, /still works, so this run started none$/);
+  assert.equal(runsOf("d8")[0]!.given, undefined);
+  assert.equal(said("job-works").length, 1, "an item goes to the job once");
+  assert.ok(!aborted.includes("job-works"));
 });
 
 test("an after-job measure lands only on runs started before it, so an older reading never turns a later met run red", () => {

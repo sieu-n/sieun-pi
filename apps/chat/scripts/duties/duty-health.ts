@@ -241,6 +241,35 @@ type Run = DutyRow["runs"][number];
 /** A run's verdict and summary once its job's fixes are in: the after-job measure when it has one. */
 const effective = (run: Run): { verdict: string; summary: string } => ({ verdict: run.after?.verdict ?? run.verdict, summary: run.after?.summary ?? run.summary ?? "" });
 
+/**
+ * A duty one job holds: 3 or more runs of a not-met streak older than 24 h started no job and gave the same job nothing. The numbers are
+ * the survey's of 11-28 (~/work/bill-check-miss/survey.md, "Hole 5"): devops guy's d17 had 7 such runs behind one job in 62 h, 5180
+ * designer's d1 had 9 and agent factory's d2 had 3, and no duty with fewer runs behind one job had a finding that reached nobody.
+ */
+export const HELD_RUNS = 3;
+
+/**
+ * The jobs that hold a duty, from its measured runs, newest first: per job, the runs of the newest not-met streak that named it, started
+ * none (the run holds no `submission`) and gave it nothing (`given`, server/duty-items.ts), when the streak has HELD_RUNS runs, began over
+ * 24 h ago and HELD_RUNS of them stand behind that job. `now` says whether the job is the one the newest run names, which a fix can still
+ * move, and `waits` how many of its runs said the job waited for a model account, which is pi-pool's line and no fault of the duty system.
+ */
+export function heldJobs(runs: readonly Run[], now: number): { job: string; name: string; runs: number; waits: number; since: number; now: boolean }[] {
+  const end = runs.findIndex(run => effective(run).verdict === "met");
+  const streak = end < 0 ? runs : runs.slice(0, end);
+  const since = streak.at(-1)?.at;
+  if (streak.length < HELD_RUNS || since === undefined || now - since <= DAY_MS) return [];
+  const held = new Map<string, { job: string; name: string; runs: number; waits: number }>();
+  for (const run of streak) {
+    if (!run.job || run.job.submission !== undefined || run.given?.length) continue;
+    const entry = held.get(run.job.id) ?? { job: run.job.id, name: run.job.name ?? run.job.id, runs: 0, waits: 0 };
+    entry.runs += 1;
+    if (JOB_WAITS_ACCOUNT.test(run.summary ?? "")) entry.waits += 1;
+    held.set(run.job.id, entry);
+  }
+  return [...held.values()].filter(entry => entry.runs >= HELD_RUNS).map(entry => ({ ...entry, since, now: streak[0]!.job?.id === entry.job }));
+}
+
 export interface DutyHealthRead {
   agent: Named; duties: readonly DutyRow[]; steps: readonly FixStep[];
   /** Per duty id, the flagged item of its newest run whose kind names something the run left out (`LEFT_OUT_KIND`), read from the run's detail file. */
@@ -254,16 +283,22 @@ export interface DutyHealthRead {
  * - not_measured: the run left a metric with no value while no box was away and no outside wait was named, so the card shows no number.
  * - red_no_job: the duty reads missed, the run names no job and no fix step has a job at work, so nobody moves it.
  * - job_unreported: the duty's newest job ended (its after-job measure ran) and its report never reached the agent's work thread.
+ * - held_by_one_job: the job its newest run names holds the duty (`heldJobs`), with HELD_RUNS runs that gave it nothing while it waited for
+ *   no model account. Since 11-28 the duty runner steers such a job with each new item and replaces it past its stuck limit
+ *   (server/duty-items.ts), so one that shows here slipped through that rule.
  * They go to d7's own duty job to fix in the shared duty code or text, never to the agent, and put no agent off the pattern.
  *
- * Four more counts are readings with no target, because the duty job cannot move them by a fix of its own: the failed and unmeasured runs
+ * Five more counts are readings with no target, because the duty job cannot move them by a fix of its own: the failed and unmeasured runs
  * of the last 24 h, the duties whose job waits for a model account (pi-pool's line, held on the owner's account todos), the fix steps
- * closed in 24 h whose words say the check was wrong (`CHECK_WAS_WRONG`), and the duties that read met while their goal or newest run
- * names something they leave out (`LEAVES_OUT`), as devops guy's d17 left out PostHog's unpriced rows and read nothing for them.
+ * closed in 24 h whose words say the check was wrong (`CHECK_WAS_WRONG`), the duties that read met while their goal or newest run
+ * names something they leave out (`LEAVES_OUT`), as devops guy's d17 left out PostHog's unpriced rows and read nothing for them, and the
+ * duties whose not-met streak holds HELD_RUNS runs behind any one job, also a job that ended or only waited for an account
+ * (`duties_held_in_streak`, the survey's count, which stays until those runs leave the streak).
  */
 export function dutySystemFaults(reads: readonly DutyHealthRead[], now = Date.now()): { metrics: Record<string, number>; flagged: Flag[]; n: number } {
   const flagged: Flag[] = [];
-  const counts = { precheck_failed: 0, not_measured: 0, red_no_job: 0, job_unreported: 0 };
+  const counts = { precheck_failed: 0, not_measured: 0, red_no_job: 0, job_unreported: 0, held_by_one_job: 0 };
+  let heldInStreak = 0;
   let duties = 0;
   let failedRuns = 0;
   let unmeasuredRuns = 0;
@@ -305,6 +340,13 @@ export function dutySystemFaults(reads: readonly DutyHealthRead[], now = Date.no
       }
       const started = measured.find(run => run.job?.submission !== undefined);
       if (started?.after && !started.job!.reported) flag("job_unreported", `its job ${started.job!.name ?? started.job!.id} ended and its report never reached the work thread`);
+      const holders = heldJobs(measured, now);
+      if (holders.length) heldInStreak += 1;
+      const holder = holders.find(entry => entry.now && entry.runs - entry.waits >= HELD_RUNS);
+      if (holder) {
+        flag("held_by_one_job", `it is not met since ${kst(holder.since)} KST, and ${holder.runs} of its runs started no job and gave its job ${holder.name} nothing` +
+          `${holder.waits ? `, ${holder.waits} of them while that job waited for a model account` : ""}: ${squash(summary).slice(0, 160)}`);
+      }
       if (JOB_WAITS_ACCOUNT.test(newest.summary ?? "")) {
         accountWaits += 1;
         const first = [...measured].reverse().find(run => run.job?.id === newest.job?.id);
@@ -319,11 +361,13 @@ export function dutySystemFaults(reads: readonly DutyHealthRead[], now = Date.no
       }
     }
   }
-  const faults = counts.precheck_failed + counts.not_measured + counts.red_no_job + counts.job_unreported;
+  const faults = counts.precheck_failed + counts.not_measured + counts.red_no_job + counts.job_unreported + counts.held_by_one_job;
   return {
     metrics: {
       duty_system_faults: faults, prechecks_failed: counts.precheck_failed, duties_not_measured: counts.not_measured, red_duties_no_job: counts.red_no_job, duty_jobs_unreported: counts.job_unreported,
+      duties_held_by_one_job: counts.held_by_one_job,
       precheck_failed_runs_24h: failedRuns, unmeasured_runs_24h: unmeasuredRuns, duty_jobs_waiting_account: accountWaits, fixes_blaming_check_24h: checkWrong, duties_met_leaving_out: leavesOut,
+      duties_held_in_streak: heldInStreak,
     },
     flagged, n: duties,
   };

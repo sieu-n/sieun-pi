@@ -14,6 +14,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
 import { agedOut, closedUntil, pushMisses, readsParts } from "./duty-push.ts";
+import { intervalMs, STUCK_MAX_MS, STUCK_MIN_MS, stuckAfterMs } from "./duty-stuck.ts";
 import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
@@ -156,8 +157,8 @@ export type CheckInStart = "started" | "done" | "failed";
  * 14:45Z slot left no record). A slot that comes while the last run starts its job gets no record (`skipBusy`).
  */
 export const STILL_GOING = "skipped: previous run still";
-/** A duty job may work this long before a later run counts it as stuck, however short its duty's interval. */
-export const STUCK_MIN_MS = 90 * 60_000;
+/** The stuck limits of a duty job, which sw factory's duty runner reads too (src/duty-stuck.ts). */
+export { intervalMs, STUCK_MAX_MS, STUCK_MIN_MS, stuckAfterMs };
 /**
  * A duty job whose tree wrote no model reply for this long is stalled (`DutyJobHost.repliedSince`), whatever keeps it up but a pi-pool line or
  * slot hold (`previous`), and the next run replaces it. On 10-29 the Wiki dream's 14:33 KST job wrote its last reply at 07:54Z, then sat on
@@ -165,20 +166,6 @@ export const STUCK_MIN_MS = 90 * 60_000;
  * was a 52 min pi-pool park, and its longest gap with no failed call was 6 min. The value is STUCK_MIN_MS.
  */
 export const STALLED_MS = 90 * 60_000;
-/**
- * A duty job still working this long after its run started is stuck, however long its duty's interval: a daily slot can run CATCH_UP_MS (6 h)
- * late, so the next slot can come 18 h after its job started, and the limit must be under that.
- */
-export const STUCK_MAX_MS = 12 * 60 * 60_000;
-/**
- * How long a duty job may work before the next run of its duty retires it as stuck and starts a new one: one interval, at least STUCK_MIN_MS and
- * at most STUCK_MAX_MS. A daily duty's interval is a day. Without the limit one hung job skipped every later run: slack green guy 10-10, 37 h with
- * no check-in; ops guy 10-11, a 10-minute duty skipped for 17 h; AI harness VP 10-11, three daily duties skipped a day on jobs whose model
- * requests hung for hours and were aborted at each restart.
- */
-export function stuckAfterMs(schedule: DutySchedule): number {
-  return Math.min(Math.max(intervalMs(schedule), STUCK_MIN_MS), STUCK_MAX_MS);
-}
 
 /**
  * Why a run keeps the duty's last job whose report is not in, up to STUCK_MAX_MS after its run started, and hands it the run's items: pi-pool
@@ -205,9 +192,6 @@ export const IN_POOL_LINE = "is kept, since pi-pool holds its tree in line for a
  * STUCK_MAX_MS since its run started, as IN_POOL_LINE does.
  */
 export const POOL_PARKED = "is kept, since pi-pool parked its tree on a slot and a new job would ask the same pool";
-
-/** The time between two slots of a schedule; a daily duty's is a day. */
-export const intervalMs = (schedule: DutySchedule): number => schedule.kind === "every" ? schedule.minutes * 60_000 : 24 * 60 * 60_000;
 
 /**
  * The one hard stop of a precheck: its duty's schedule gap, and never less than its own soft target. A precheck still going holds every later

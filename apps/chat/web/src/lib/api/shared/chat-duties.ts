@@ -175,8 +175,23 @@ export interface DutyRunRecord {
   classes?: Record<string, number>; flagged?: FlaggedSlice[]; job?: DutyJobRef;
   /** Set when the precheck ran past its soft target. */
   overrun?: PrecheckOverrun;
-  /** Per missed metric, the fix step the run found on the chat's board for it (a plan step whose `duty` is `<dutyId>/<metricKey>`). */
+  /**
+   * Per missed metric, the fix step the run found on the chat's board for it (a plan step whose `duty` is `<dutyId>/<metricKey>`). A metric
+   * that counts flagged items (`owners`) has one only when an open step names every item.
+   */
   fixes?: Record<string, FixLink>;
+  /**
+   * Per missed metric that counts flagged items, each item and the open fix step that names it (`fixesOn` in server/duty-run.ts). On 11-26
+   * devops guy's d17 read lines_over_pace as fixed by p46 "vercel spend cut" while its 2 to 4 over lines were PostHog, GeoNode and OpenAI lines.
+   */
+  owners?: Record<string, ItemOwner[]>;
+  /**
+   * The keys of the flagged items and missed metrics this run gave the job it names (`itemKey` and `metricKey` in server/duty-items.ts): its
+   * brief's when it started the job, else what it steered into the job that still worked. A later run gives that job only what no run gave it.
+   */
+  given?: string[];
+  /** The duty job this run stopped and replaced, since it held the duty past its stuck limit with no missed number closer to its target. */
+  replaced?: { id: string; name: string };
   /** The measure taken after this run's job ended, the one it started or measured beside: the run's verdict once its fixes are in (`effectiveRun`). */
   after?: AfterMeasure;
   /** Set when the run's job ended cut, so the run did not do its work and reruns (`cutReruns` in src/chat-duty-run.ts). */
@@ -209,6 +224,8 @@ export interface FixLink { step: string; job?: string; live: boolean; hold?: str
   target?: { current: number; target: number; direction?: "up" | "down"; measuredAt?: string };
   /** The job's session sat in one tool call past STALL_MS when the run looked (src/shared/stalled-calls.ts): not live, and the brief names its process. */
   stalled?: StalledCall }
+/** One flagged item a missed metric counts, by its sig or item, and the open fix step whose text or note names it, if any. */
+export interface ItemOwner { item: string; step?: string }
 /** A run's re-measure after its own job ended. */
 export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>;
   readings?: Record<string, number>; items?: Record<string, MetricResult>; hostAway?: string }

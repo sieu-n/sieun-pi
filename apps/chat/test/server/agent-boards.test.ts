@@ -11,7 +11,7 @@ import {
   type Ask, type DutyRow,
 } from "../../scripts/duties/agent-boards.ts";
 import {
-  JOB_WAITS_ACCOUNT, NOT_MEASURED, PRECHECK_FAILED, blindChecks, dutySystemFaults, fixCloses, readPastProblems, readReturns, readsOf, replay, returningProblems, returnsOf, runFile,
+  JOB_WAITS_ACCOUNT, NOT_MEASURED, PRECHECK_FAILED, blindChecks, dutySystemFaults, fixCloses, heldJobs, readPastProblems, readReturns, readsOf, replay, returningProblems, returnsOf, runFile,
   type PastProblem,
 } from "../../scripts/duties/duty-health.ts";
 import { judge, type DutyMetric } from "../../web/src/lib/api/shared/chat-duties.ts";
@@ -615,7 +615,7 @@ test("a metric that went red again twice after a closed fix is a returning probl
     { a: { at: 5, met: false }, c: { at: 5, met: true } });
 });
 
-test("a failed precheck, an unmeasured run, a red duty with no job and a lost job report are the duty system's faults; waits and readings are not", () => {
+test("a failed precheck, an unmeasured run, a red duty with no job, a lost job report and a duty one job holds are the duty system's faults; waits and readings are not", () => {
   const metrics: DutyMetric[] = [{ key: "lines_over_pace", label: "Lines over pace", op: "<=", target: 0, headline: true }, { key: "reads_failing", label: "Reads failing", op: "<=", target: 0 }];
   // The summaries are the server's own: judge() for an unmeasured metric, duty-run.ts for a failed precheck, boards.ts for an account wait.
   const unmeasured = judge(metrics, { metrics: { lines_over_pace: 0 } });
@@ -624,11 +624,18 @@ test("a failed precheck, an unmeasured run, a red duty with no job and a lost jo
   assert.doesNotMatch(judge(metrics, { metrics: { lines_over_pace: 0, reads_failing: 0 } }).summary, NOT_MEASURED);
   const server = (file: string) => appFile(`server/${file}`);
   assert.ok(server("duty-run.ts").includes(`summary: "${PRECHECK_FAILED}"`));
-  const waits = [...server("boards.ts").matchAll(/`; ([^`]*model account[^`]*)`/g)].map(match => match[1]!);
-  assert.equal(waits.length, 5, "the five endings besideBusyJob gives a run whose job waits for a model account");
+  // Four endings for a job with no model answer yet, and the state of one that answered, which each of its three endings carries.
+  const waits = [...server("boards.ts").matchAll(/`(?:; )?((?:its job|stopped its job|is waiting)[^`]*model account[^`]*)`/g)].map(match => match[1]!);
+  assert.equal(waits.length, 5, "the five wordings besideBusyJob gives a run whose job waits for a model account");
   for (const words of waits) assert.match(words, JOB_WAITS_ACCOUNT);
   const row = (id: string, runs: DutyRow["runs"], more: Partial<DutyRow> = {}): DutyRow => ({ duty: { id, name: `Duty ${id}`, status: "active", metrics }, paused: false, runs, ...more });
   const at = NOW - HOUR;
+  // A run that started a job, and a later run beside that job with the words boards.ts gives it and the keys of what it gave the job.
+  const HELD = { id: "j-held", name: "Duty duty 261126-061043" };
+  const STARTED_NONE = "lines_over_pace 2 (target at most 0); its job Duty duty 261126-061043 still works, so this run started none";
+  const WAITS = "lines_over_pace 2 (target at most 0); its job Duty duty 261126-061043 is waiting for a model account since 07:45 KST, so this run started none";
+  const started = (when: number, id = HELD.id): DutyRow["runs"][number] => ({ verdict: "missed", at: when, summary: "lines_over_pace 2 (target at most 0)", job: { ...HELD, id, submission: 1, reported: true } });
+  const beside = (when: number, summary: string, given?: string[]): DutyRow["runs"][number] => ({ verdict: "missed", at: when, summary, job: HELD, ...(given ? { given } : {}) });
   const out = dutySystemFaults([{
     agent: { id: "ag_devops-guy", name: "devops guy" },
     steps: [
@@ -654,17 +661,33 @@ test("a failed precheck, an unmeasured run, a red duty with no job and a lost jo
       row("d12", [{ verdict: "error", at, summary: PRECHECK_FAILED }], { paused: true }),
       row("d13", [{ verdict: "skipped", at }]),
       { ...row("d14", [{ verdict: "met", at, summary: "all 2 on target" }]), duty: { id: "d14", name: "Duty d14", status: "active", metrics, goal: "Every line stays inside plan. PostHog is left out because its rows carry no price." } },
+      // devops guy's d17 from 11-25: one job, and three runs over a day that started none and gave it nothing.
+      row("d17", [beside(at, STARTED_NONE), beside(at - 20 * HOUR, STARTED_NONE), beside(at - 24 * HOUR, STARTED_NONE), started(at - 26 * HOUR)]),
+      // The same, but each run gave the job its new items, as the duty runner does since 11-28.
+      row("d18", [beside(at, STARTED_NONE, ["line_over_pace|posthog//Events"]), beside(at - 20 * HOUR, STARTED_NONE, ["metric|reads_failing"]), beside(at - 24 * HOUR, STARTED_NONE, ["a"]), started(at - 26 * HOUR)]),
+      // The job only waited for a model account, which is pi-pool's line.
+      row("d19", [beside(at, WAITS), beside(at - 20 * HOUR, WAITS), beside(at - 24 * HOUR, WAITS), started(at - 26 * HOUR)]),
+      // A job held three runs and ended; the newest run started another, so nothing holds the duty now.
+      row("d20", [started(at, "j-new"), beside(at - 20 * HOUR, STARTED_NONE), beside(at - 24 * HOUR, STARTED_NONE), beside(at - 25 * HOUR, STARTED_NONE), started(at - 26 * HOUR)]),
+      // Three such runs inside one day are no streak older than 24 h.
+      row("d21", [beside(at, STARTED_NONE), beside(at - HOUR, STARTED_NONE), beside(at - 2 * HOUR, STARTED_NONE), started(at - 3 * HOUR)]),
     ],
   }], NOW);
   assert.deepEqual(out.flagged.filter(flag => flag.handOff).map(flag => flag.sig), [
     "ag_devops-guy/d1/system/precheck_failed", "ag_devops-guy/d2/system/precheck_failed", "ag_devops-guy/d3/system/not_measured", "ag_devops-guy/d7/system/red_no_job", "ag_devops-guy/d11/system/job_unreported",
+    "ag_devops-guy/d17/system/held_by_one_job",
   ]);
   assert.ok(out.flagged.every(flag => flag.item === undefined), "the duty job owns them, and no agent goes off the pattern");
   assert.deepEqual(out.metrics, {
-    duty_system_faults: 5, prechecks_failed: 2, duties_not_measured: 1, red_duties_no_job: 1, duty_jobs_unreported: 1,
-    precheck_failed_runs_24h: 3, unmeasured_runs_24h: 1, duty_jobs_waiting_account: 1, fixes_blaming_check_24h: 1, duties_met_leaving_out: 2,
+    duty_system_faults: 6, prechecks_failed: 2, duties_not_measured: 1, red_duties_no_job: 1, duty_jobs_unreported: 1, duties_held_by_one_job: 1,
+    precheck_failed_runs_24h: 3, unmeasured_runs_24h: 1, duty_jobs_waiting_account: 2, fixes_blaming_check_24h: 1, duties_met_leaving_out: 2,
+    duties_held_in_streak: 3,
   });
-  assert.equal(out.n, 12, "n is the duties that are not paused and have a measured run");
+  assert.equal(out.n, 17, "n is the duties that are not paused and have a measured run");
+  assert.match(out.flagged.find(flag => flag.kind === "system_held_by_one_job")!.excerpt,
+    /devops guy d17 "Duty d17": it is not met since 11-23 06:00 KST, and 3 of its runs started no job and gave its job Duty duty 261126-061043 nothing: lines_over_pace 2/);
+  assert.deepEqual(heldJobs([beside(at, WAITS), beside(at - 20 * HOUR, STARTED_NONE), beside(at - 24 * HOUR, STARTED_NONE), started(at - 26 * HOUR)], NOW),
+    [{ job: "j-held", name: "Duty duty 261126-061043", runs: 3, waits: 1, since: at - 26 * HOUR, now: true }]);
   const excerpt = (kind: string) => out.flagged.filter(flag => flag.kind === kind).map(flag => flag.excerpt);
   assert.match(excerpt("system_precheck_failed")[0]!, /devops guy d1 "Duty d1": its newest run's precheck failed: exit 1: TypeError: fetch failed/);
   assert.match(excerpt("system_precheck_failed")[1]!, /precheck ran 400 s against a target of 120 s/);

@@ -13,10 +13,11 @@ import { promisify } from "node:util";
 import type { ChatBoard, PlanItem } from "../web/src/lib/api/types.ts";
 import {
   errorStreak, headlineMetric, hostAwayOf, judge, outputReadings, outsideWaitOf, overrunWords, verdictMetrics, ERROR_RUNS_TARGET,
-  type AfterMeasure, type Duty, type DutyRunRecord, type DutyTrigger, type FixLink, type FlaggedSlice, type PrecheckOutput,
+  type AfterMeasure, type Duty, type DutyRunRecord, type DutyTrigger, type FixLink, type FlaggedSlice, type ItemOwner, type PrecheckOutput,
 } from "../web/src/lib/api/shared/chat-duties.ts";
 import { metricStreaks, type MetricStreak } from "../web/src/lib/api/shared/duty-streak.ts";
-import { briefFindings } from "./brief-cap.ts";
+import { BRIEF_ITEMS, briefFindings, cappedLines, plainItem } from "./brief-cap.ts";
+import { countedItems, itemOwners, type RunItems, type Unseen } from "./duty-items.ts";
 
 /** A precheck that runs past its own `timeoutMs` keeps running (c98) up to this hard stop: its schedule's gap, a destructive-runaway guard. */
 export const intervalMs = (duty: Pick<Duty, "schedule">): number => duty.schedule.kind === "every" ? duty.schedule.minutes * 60_000 : 24 * 60 * 60_000;
@@ -251,20 +252,40 @@ function walk(plan: readonly PlanItem[], visit: (item: PlanItem) => void): void 
 
 /**
  * The fix step for each missed metric: an open plan step whose `duty` is `<dutyId>/<metricKey>`, with `hold` naming the open For you todo that
- * links it, since only the owner's answer moves such a step and its miss owes no fix job (`Boards.pushDuty`).
+ * links it, since only the owner's answer moves such a step and its miss owes no fix job (`Boards.pushDuty`). A metric that counts flagged
+ * items (`items`, per key the names `countedItems` reads from the run) is owned item by item: `owners` says which open step linked to the
+ * metric names each one in its text or note, and the metric has a fix only when a step names every item. Until 11-28 the first linked step
+ * owned the whole metric: every d17 run from 11-25 read lines_over_pace as fixed by p46 "vercel spend cut", and its PostHog, GeoNode and
+ * OpenAI lines had no owner (~/work/bill-check-miss/survey.md).
  */
-export function fixesOn(board: ChatBoard | null, dutyId: string, keys: readonly string[], liveJob: (job: string) => boolean): Record<string, FixLink> {
-  const out: Record<string, FixLink> = {};
-  if (!board) return out;
+export function fixesOn(board: ChatBoard | null, dutyId: string, keys: readonly string[], liveJob: (job: string) => boolean,
+  items: Readonly<Record<string, readonly string[]>> = {}): { fixes: Record<string, FixLink>; owners: Record<string, ItemOwner[]> } {
+  const fixes: Record<string, FixLink> = {};
+  const owners: Record<string, ItemOwner[]> = {};
+  if (!board) return { fixes, owners };
   const held = new Map(board.todos.flatMap(todo => !todo.done && todo.step ? [[todo.step, todo.id] as const] : []));
+  const linked = new Map<string, PlanItem[]>();
   walk(board.plan, item => {
     if (item.status === "done" || item.status === "dropped" || !item.duty) return;
     const [id, key] = item.duty.split("/");
-    if (id !== dutyId || !key || !keys.includes(key) || out[key]) return;
-    const hold = held.get(item.id);
-    out[key] = { step: item.id, ...(item.job ? { job: item.job } : {}), live: item.job ? liveJob(item.job) : false, ...(hold ? { hold } : {}) };
+    if (id === dutyId && key && keys.includes(key)) linked.set(key, [...linked.get(key) ?? [], item]);
   });
-  return out;
+  const link = (item: PlanItem): FixLink => {
+    const hold = held.get(item.id);
+    return { step: item.id, ...(item.job ? { job: item.job } : {}), live: item.job ? liveJob(item.job) : false, ...(hold ? { hold } : {}) };
+  };
+  for (const key of keys) {
+    const steps = linked.get(key) ?? [];
+    const counted = items[key] ?? [];
+    if (!counted.length) {
+      if (steps[0]) fixes[key] = link(steps[0]);
+      continue;
+    }
+    owners[key] = itemOwners(steps, counted);
+    const first = steps.find(step => owners[key]!.some(owner => owner.step === step.id));
+    if (first && owners[key]!.every(owner => owner.step)) fixes[key] = link(first);
+  }
+  return { fixes, owners };
 }
 
 const flaggedSection = (flagged: readonly FlaggedSlice[]): string =>
@@ -276,6 +297,10 @@ export interface DutyRunResult {
   brief: string | null;
   /** The jobs of earlier runs that hold a hand-off sig this run flags again, so a waiting one among them still has work (`Boards.besideBusyJob`). */
   heldBy: readonly string[];
+  /** Every flagged item of the run and its missed metrics, which a job is given once each (server/duty-items.ts). */
+  items: RunItems;
+  /** The run's findings file, which lists every flagged item; an error run has none. */
+  findingsFile?: string;
 }
 
 /**
@@ -287,6 +312,17 @@ const namesN = (output: PrecheckOutput): boolean => {
   return typeof n === "number" ? Number.isFinite(n) : !!n && typeof n === "object" && Object.values(n).some(value => typeof value === "number" && Number.isFinite(value));
 };
 export const NO_N_LINE = "This duty's precheck output has no top-level n. In this run, add n, the count of things the run measured, to its output.";
+/** A precheck output with no n hands its fix to one job a day, as a hand-off sig does. */
+const noNSlice = (dutyId: string): FlaggedSlice => ({ kind: "no_sample_size", excerpt: NO_N_LINE, handOff: true, sig: `${dutyId}/n` });
+
+/**
+ * The flagged items a stored run had for its job, read from its detail file as `measure` listed them: the precheck's own, and the no-n
+ * hand-off when the output names no n. A run from before run records kept `given` is read this way (`givenTo` in duty-items.ts).
+ */
+export async function detailItems(detail: string, dutyId: string): Promise<FlaggedSlice[]> {
+  const output = JSON.parse(await readFile(detail, "utf8")) as PrecheckOutput;
+  return [...output.flagged ?? [], ...namesN(output) ? [] : [noNSlice(dutyId)]];
+}
 
 /** Measures one run and writes its detail and findings files into `dir`. */
 export async function measure(input: {
@@ -330,13 +366,15 @@ export async function measure(input: {
   const counted = new Set(verdictMetrics(duty.metrics).map(m => m.key));
   const missed = Object.entries(record.metrics).filter(([key, result]) => !result.met && counted.has(key)).map(([key]) => key);
   if (record.verdict === "missed") {
-    const fixes = fixesOn(input.board, duty.id, missed, input.liveJob);
+    const { fixes, owners } = fixesOn(input.board, duty.id, missed, input.liveJob, Object.fromEntries(missed.map(key => [key, countedItems(key, flagged)])));
     if (Object.keys(fixes).length) record.fixes = fixes;
+    if (Object.keys(owners).length) record.owners = owners;
   }
   const misses: MetricStreak[] = record.verdict === "missed" ? metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key)) : [];
   const runNotes = [record.overrun ? `This run went over: ${overrunWords(record.overrun)}. Make the precheck faster or set its timeoutMs to what it needs.` : "",
     noN ? NO_N_LINE : ""].filter(Boolean).join("\n\n");
   let findings: string;
+  let findingsFile: string | undefined;
   if (record.verdict === "error" && record.waitsOn) {
     findings = [`No measure: ${record.summary}. It waits on something outside the precheck: ${record.waitsOn} The precheck is not broken, so leave it as it is ` +
       "and start no fix job for it; this run counts toward no error streak.", runNotes].filter(Boolean).join("\n\n");
@@ -344,7 +382,7 @@ export async function measure(input: {
     const streak = errorStreak([record, ...previous]);
     findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, runNotes].filter(Boolean).join("\n\n");
   } else {
-    const findingsFile = join(dir, `${duty.id}-${runStamp(started)}.findings.md`);
+    findingsFile = join(dir, `${duty.id}-${runStamp(started)}.findings.md`);
     await writeFile(findingsFile, [`# ${duty.name} run of ${new Date(started).toISOString()}`, `Measured against the targets: ${record.summary}.`, runNotes,
       `The full precheck output is ${detail}.`, flaggedSection(flagged)].filter(Boolean).join("\n\n") + "\n", { mode: 0o600 });
     const headline = headlineMetric(duty.metrics);
@@ -361,8 +399,7 @@ export async function measure(input: {
     if (!run.job || started - run.at >= 86_400_000) continue;
     for (const slice of run.flagged ?? []) if (slice.handOff && slice.sig && !handed.has(slice.sig)) handed.set(slice.sig, run.job.id);
   }
-  // A precheck output with no n hands its fix to one job a day, as a hand-off sig does.
-  const nSlice: FlaggedSlice[] = noN ? [{ kind: "no_sample_size", excerpt: NO_N_LINE, handOff: true, sig: `${duty.id}/n` }] : [];
+  const nSlice: FlaggedSlice[] = noN ? [noNSlice(duty.id)] : [];
   const handOffs = [...flagged.filter(slice => slice.handOff && slice.sig), ...nSlice];
   // The record keeps only the sigs this run hands to its job, so d7's `duplicateJobs` reads a job that a missed metric started as no second
   // owner of a sig an earlier job holds: on 11-26 devops guy's d12 verify job read as a duplicate of d12/n.
@@ -373,7 +410,7 @@ export async function measure(input: {
   // has nothing a job can do.
   const waits = record.verdict === "error" && (record.waitsOn !== undefined || record.hostAway !== undefined) && Object.values(record.metrics).every(result => result.met);
   const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;
-  return { record, heldBy, brief: idle ? null : dutyJobBrief({ duty, chat: input.chat, at: started, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, record, boardApi: input.boardApi }) };
+  return { record, heldBy, items: { flagged: [...flagged, ...nSlice], missed }, ...(findingsFile ? { findingsFile } : {}), brief: idle ? null : dutyJobBrief({ duty, chat: input.chat, at: started, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, record, boardApi: input.boardApi }) };
 }
 
 /**
@@ -383,6 +420,36 @@ export async function measure(input: {
  */
 const TRACE_LINE = "Trace each missed or flagged number to the workload that makes it, such as a job, cron, sync or caller, and fix that cause today; " +
   "a report of the number is no fix. An item the precheck leaves out or cannot read is not measured, never fine: make the precheck read it and count it.";
+
+/**
+ * What a run beside the duty's job that still works steers into it: the flagged items and missed metrics no run gave it yet (`unseen` in
+ * server/duty-items.ts), at most BRIEF_ITEMS items in words, with the findings file that lists them all.
+ */
+export function newItemsText(input: { duty: Pick<Duty, "name">; record: DutyRunRecord; fresh: Unseen; findingsFile?: string }): string {
+  const { duty, record, fresh, findingsFile } = input;
+  const when = new Date(record.at + 9 * 3600_000).toISOString().slice(11, 16);
+  const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
+  const parts = [...fresh.flagged.length ? [count(fresh.flagged.length, "flagged item")] : [], ...fresh.missed.length ? [count(fresh.missed.length, "missed metric")] : []].join(" and ");
+  return [
+    `The ${duty.name} run of ${when} KST measured while you work: ${record.summary}. It found ${parts} that your brief and the runs since did not give you. ` +
+      "Work them like your brief's items before you end.",
+    ...fresh.missed.length ? [`Newly missed: ${fresh.missed.map(key => { const result = record.metrics[key]; return result ? `${key} ${result.value} (target ${result.op === "<=" ? "at most" : "at least"} ${result.target})` : key; }).join("; ")}.`] : [],
+    ...fresh.flagged.length ? [cappedLines(fresh.flagged.map(plainItem), findingsFile)] : [],
+    ...findingsFile ? [`Every flagged item of that run is in ${findingsFile}.`] : [],
+  ].join("\n\n");
+}
+
+/**
+ * The section a new job's brief gets when its run replaced a job that held the duty past its stuck limit: which job, how long it held the
+ * duty, and its last report, so the new job starts from what the old one found and does not repeat it.
+ */
+export function replacedSection(input: { job: string; heldMs: number; report: string }): string {
+  const report = input.report.trim();
+  return ["## The job before you",
+    `This run stopped the job "${input.job}": it held this duty for ${Math.round(input.heldMs / 3_600_000)} h with no missed number closer to its target. ` +
+      "Do not wait as it did: fix the cause of each miss in this run, or hand what only the owner can decide to a For you todo linked to its fix step.",
+    report ? `Its last report:\n\n${report.split("\n").map(line => `> ${line}`).join("\n")}` : "It sent no report."].join("\n\n");
+}
 
 /** The duty job's brief, after today's `dutyJobBrief`, with the board and the report through the chat server instead of Prime's tools. */
 export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: string }; at: number; measure: string; findings: string; misses: readonly MetricStreak[]; record: DutyRunRecord; boardApi: string }): string {
@@ -405,8 +472,12 @@ export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: stri
     findings,
     ...(misses.length ? [`## Missed metrics: each one needs a fix step with a live job\n` + misses.map(streak => {
       const fix = record.fixes?.[streak.key];
-      return `- ${streak.key}: missed ${streak.misses} run${streak.misses === 1 ? "" : "s"} in a row${fix ? `, fix step ${fix.step}${fix.job ? ` (job ${fix.job}${fix.live ? ", working" : ", not working"})` : ""}` : ", no fix step yet"}.`;
+      const unowned = (record.owners?.[streak.key] ?? []).filter(owner => !owner.step).map(owner => owner.item);
+      return `- ${streak.key}: missed ${streak.misses} run${streak.misses === 1 ? "" : "s"} in a row${fix ? `, fix step ${fix.step}${fix.job ? ` (job ${fix.job}${fix.live ? ", working" : ", not working"})` : ""}`
+        : unowned.length ? `, and no open fix step names ${unowned.length} of the ${record.owners![streak.key]!.length} flagged items it counts: ${unowned.slice(0, BRIEF_ITEMS).join("; ")}${unowned.length > BRIEF_ITEMS ? `; and ${unowned.length - BRIEF_ITEMS} more` : ""}` : ", no fix step yet"}.`;
     }).join("\n") + "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `" + duty.id + "/<metricKey>`. " +
+      (Object.keys(record.owners ?? {}).length ? "A metric that counts flagged items is owned item by item: a step owns only the items its text or note names, as the " +
+        "findings file writes them, so give each item above a fix step that names it, or add its name to the note of the step that already works on it. " : "") +
       "When a fix step closes, the chat server runs this duty again at once, and while the duty stays red with no job on it, again each check-in interval."] : []),
     "## How to work",
     `The precheck is \`${duty.precheck.command.join(" ")}\` in ${duty.precheck.cwd}; read its script there and its per-run output in the findings file above.`,
