@@ -290,6 +290,17 @@ def due(provider, cfg, now):
     return out
 
 
+def refused_by_org(ids, now):
+    """The accounts of `ids` that the last /v1/messages probe found refused for their organization ("oauth not
+    allowed for organization": a paused, unpaid or removed seat). Their usage read gets a 403 a few times and then
+    only 429s with Retry-After 3600, and each read after the hour starts a new hour. From 11-15 to 11-28 eleven
+    such accounts were read about once an hour each for 6 to 13 days, and every answer was a 429. The sampler
+    probes them instead, and reads one the first minute after the probe accepts it again."""
+    prov = registry.load_state()["providers"]["anthropic"]
+    reasons, cooldowns = prov.get("cooldown_reasons") or {}, prov.get("cooldowns") or {}
+    return {i for i in ids if reasons.get(i) == base.OAUTH_OFF and (cooldowns.get(i) or 0) > now}
+
+
 def cmd_sample(rest=()):
     """`pi-pool sample`: read every account whose usage figure is due. The pool
     host's timer runs it every minute."""
@@ -303,7 +314,10 @@ def cmd_sample(rest=()):
             continue
         if ids:
             selection[provider] = ids
-    if not selection:
+    refused = refused_by_org(selection.get("anthropic") or (), now)
+    selection = {p: [i for i in ids if i not in refused] for p, ids in selection.items()}
+    selection = {p: ids for p, ids in selection.items() if ids}
+    if not selection and not refused:
         return 0
     failed, read = [], {}
 
@@ -312,11 +326,12 @@ def cmd_sample(rest=()):
             failed.append(e.get("label"))
         elif e.get("event") == "read":
             read.setdefault(e["provider"], []).append(e["id"])
-    read_many(selection, note)
-    base.log("usage_sample", accounts=sum(len(v) for v in selection.values()), failed=failed)
+    if selection:
+        read_many(selection, note)
+    base.log("usage_sample", accounts=sum(len(v) for v in selection.values()), failed=failed, refused=len(refused))
     for provider, ids in read.items():
         vending.book_opened(provider, ids)
     failed_claude = set(selection.get("anthropic") or ()) & {a.id for a in registry.load_index("anthropic") if a.label in failed}
-    if failed_claude:
-        vending.probe_failed_reads(failed_claude)
+    if failed_claude | refused:
+        vending.probe_failed_reads(failed_claude | refused)
     return 0

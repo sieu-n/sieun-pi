@@ -255,6 +255,25 @@ class Sampler(Store):
         self.assertNotIn("lastProbeAt", self.record("anthropic", "e"))
         self.assertEqual(len(self.record("openai-codex", "c")["windows"]), 3)
 
+    def test_sample_probes_an_account_refused_for_its_organization_and_sends_it_no_usage_read(self):
+        """11-15 to 11-28: claude-virev5 and ten other accounts Claude refused with "oauth not allowed for
+        organization" were read about once an hour for days, and every read came back 429 with Retry-After 3600."""
+        sent = []
+        self.bodies.update({"token-a": CLAUDE, "token-b": CLAUDE, "token-c": CODEX})
+        answer = self.answer
+        state = {"providers": {"anthropic": {"cooldowns": {"a": NOW + 3600, "b": NOW - 1},
+                                             "cooldown_reasons": {"a": base.OAUTH_OFF, "b": base.OAUTH_OFF}}}}
+        with unittest.mock.patch.object(usage, "get_json", lambda url, h: sent.append(h.get("Authorization")) or answer(url, h)), \
+                unittest.mock.patch.object(registry, "load_state", lambda: state), \
+                unittest.mock.patch.object(vending, "book_opened", lambda *a: None), \
+                unittest.mock.patch.object(usage.time, "time", lambda: NOW):
+            usage.cmd_sample()
+        self.assertNotIn("Bearer token-a", sent)
+        self.assertNotIn("lastProbeAt", self.record("anthropic", "a"))
+        self.assertIn("Bearer token-b", sent)
+        self.assertEqual(self.probed, [{"a"}])
+
+
 
 
 def jwt(claims):
