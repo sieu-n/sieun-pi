@@ -97,6 +97,13 @@ export const PREVIEW_UA = /facebookexternalhit|Twitterbot|Slackbot-LinkExpanding
 /** The public IPs of our own boxes, us-metal02 and us-metal01, whose jobs check these pages (10-29: 2,900 calls from 155.254.27.166 by curl, node, python and test UAs). */
 export const OWN_IPS: ReadonlySet<string> = new Set(["155.254.27.166", "64.34.205.243"]);
 export const BOT_UA = /bot\b|bot\/|crawl|spider|slurp|scrap|python|curl|wget|go-http|java\/|okhttp|axios|node-fetch|undici|headless|phantom|httpclient|libwww|^node$|externalhit|externalagent|fetcher/i;
+/**
+ * The layout engine token every browser UA carries (Blink and WebKit send AppleWebKit/, Firefox Gecko/, old IE Trident/, old Opera Presto/).
+ * measured: on the public routes from 10-29 to 11-28, the UAs without one were scripts, such as 'Mozilla/5.0 (compatible; research)' with
+ * 4,124 creator_list calls from 15 Cloudflare 104.28.x IPs on 11-17, 'Mozilla/5.0 creator research', Lightpanda, a bare 'Mozilla/5.0',
+ * PowerShell and fake MSIE 2 to 7, and BOT_UA named none of them.
+ */
+export const BROWSER_ENGINE = /AppleWebKit\/|Gecko\/|Trident\/|Presto\//;
 
 export interface Row { route: string; refk: string; ref: string; ua: string; ip: string; status: number; origin: boolean; calls: number; last: number }
 export type Verdict = { kind: "human" } | { kind: "wanted"; who: string } | { kind: "automated"; why: string };
@@ -126,6 +133,7 @@ export function classify(row: Row, typical: number | null, verify: Verify): Verd
   if (PREVIEW_UA.test(ua)) return PAGE_ROUTES.has(row.route) ? { kind: "wanted", who: "link preview" } : { kind: "automated", why: "link preview UA on an image or API route" };
   if (!ua) return { kind: "automated", why: "no user agent" };
   if (BOT_UA.test(ua)) return { kind: "automated", why: "bot or HTTP library UA" };
+  if (!BROWSER_ENGINE.test(ua)) return { kind: "automated", why: "UA with no browser engine token" };
   if (row.refk === "bare_self") return { kind: "automated", why: "referer is the bare origin https://virev.ai/" };
   if (/Chrome\/\d+ /.test(ua)) return { kind: "automated", why: "Chrome version with no dotted build, which no real Chrome sends" };
   const major = chromeMajor(ua);

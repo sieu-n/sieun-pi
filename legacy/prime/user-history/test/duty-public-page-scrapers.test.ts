@@ -50,6 +50,14 @@ test("the 10-29 scraper's calls read as automated and a person's calls read as h
   assert.equal(classify(row({ route: "profile", ua: "" }), typical, googleOnly).kind, "automated");
 });
 
+test("a UA with no browser engine token reads as automated, while Firefox and iPhone Safari stay human (research UA fleet, 11-17)", () => {
+  for (const ua of ["Mozilla/5.0 (compatible; research)", "Mozilla/5.0 creator research", "Lightpanda/1.0", "Mozilla/5.0", "Mozilla/4.0 (compatible; MSIE 6.0b; Windows NT 4.0)"])
+    assert.equal(classify(row({ route: "creator_list", refk: "none", ref: "", ua }), 149, googleOnly).kind, "automated", ua);
+  for (const ua of ["Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1"])
+    assert.equal(classify(row({ route: "creator_list", refk: "none", ref: "", ua }), 149, googleOnly).kind, "human", ua);
+});
+
 test("a search engine counts as wanted only from its own IPs, and a link preview only on pages", () => {
   assert.deepEqual(classify(row({ route: "profile", ua: GOOGLEBOT, ip: "66.249.66.1" }), 149, googleOnly), { kind: "wanted", who: "Google" });
   assert.equal(classify(row({ route: "profile", ua: GOOGLEBOT, ip: "45.174.238.246" }), 149, googleOnly).kind, "automated");
