@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  AREA_REVIEW_N_SINCE, agentBoards, agentPattern, askHeld, asksTo, duplicateJobs, ongoingAsk, dutyCoverage, liveDuty, overdueDuty, pauseReason, readAreas, readWiki, sampleSize, stalePause, unfixedMisses, wikiClutter,
+  AREA_REVIEW_N_SINCE, agentBoards, agentPattern, askHeld, asksTo, duplicateJobs, ongoingAsk, dutyCoverage, liveDuty, overdueDuty, pauseReason, planOpenSince, readAreas, readAsks, readWiki, sampleSize, stalePause,
+  unfixedMisses, wikiClutter,
   type Ask, type DutyRow,
 } from "../../scripts/duties/agent-boards.ts";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -138,7 +139,7 @@ test("c249: each agent with an area keeps a 3-hourly board push and a daily Area
   ], [], NOW);
   assert.deepEqual(out.metrics, {
     agents_off_pattern: 2, common_duties_missing: 2, common_duties_late: 1, empty_runs: 2,
-    agents_uncovered: 0, areas_uncovered: 0, agents_without_area: 1, duties_paused: 0, duties_overdue: 0, asks_unheld: 0, pauses_stale: 0, met_on_zero: 0,
+    agents_uncovered: 0, areas_uncovered: 0, agents_without_area: 1, duties_paused: 0, duties_overdue: 0, asks_unheld: 0, asks_unsorted: 0, pauses_stale: 0, met_on_zero: 0,
     runs_without_n: 0, duplicate_jobs: 0, duties_stopped: 0,
   });
   assert.deepEqual(out.flagged.filter(flag => flag.kind !== "no_area").map(flag => [flag.kind, flag.sig]), [
@@ -261,7 +262,7 @@ test("fable auditor's misses: an ongoing ask after the brief no duty names, a st
       samples: { d1: 0, d2: null }, asks: [ask("dm_mcp p4", "watch the insight endpoint every day", ["mwaaaaaa"])],
     },
     { agent: { id: "ag_crawler-guy", name: "Crawler guy", thread: "t-c" }, brief: "Crawler", duties: [paused, duty("d1", "Read cost", ["met"])], pauses: { d6: { since: NOW - 45 * HOUR, reason: "d6 stays paused until the paid proxy is back." } } },
-  ], [], NOW);
+  ], [], NOW, { standing: [{ ref: "dm_mcp p4", agent: "ag_mcp" }], one_time: [] });
   assert.deepEqual([out.metrics.asks_unheld, out.metrics.pauses_stale, out.metrics.met_on_zero, out.metrics.runs_without_n], [1, 1, 1, 1]);
   assert.deepEqual(out.flagged.filter(flag => ["ask_unheld", "pause_stale", "met_on_zero", "no_sample_size"].includes(flag.kind)).map(flag => flag.sig),
     ["ag_mcp/ask/dm_mcp p4", "ag_mcp/d1/n0", "ag_mcp/d2/n", "ag_crawler-guy/d6/pause"]);
@@ -390,8 +391,113 @@ test("an ask another agent's live duty quotes is held, and its item names that a
   const paused = agentPattern([
     { agent: { id: "ag_vp-of-gtm", name: "VP of GTM" }, brief: "GTM", duties: [duty("d1", "Outreach campaigns", ["met"])], asks: [ask] },
     { agent: { id: "ag_product-analytics-bot", name: "product analytics bot" }, brief: "Analytics", duties: [{ ...usage, paused: true }] },
-  ], [], NOW);
+  ], [], NOW, { standing: [{ ref: "#api-portal-outreach p1", agent: "VP of GTM" }], one_time: [] });
   assert.equal(paused.metrics.asks_unheld, 1);
+});
+
+test("a post the ongoing words match is a candidate: unsorted it is handed to the duty job and puts no agent off the pattern, one_time drops it, standing counts it once for its agent", () => {
+  // #1124-cost-management p33 (msg mx0amn69, 11-28): a one-time chart change that d7 counted as an unheld ask of the room's three members.
+  const p33: Ask = { ref: "#1124-cost-management p33", ids: ["mx0amn3k", "mx0amn69"], at: NOW - HOUR, text: "+properly organize this chart to be daily. same for other charts. make this the primiary chart" };
+  const member = (id: string, name: string) => ({ agent: { id, name, thread: `t-${id}` }, brief: name, duties: [duty("d1", "Its own duty", ["met"])], asks: [p33] });
+  const members = [member("ag_fable-auditor", "fable auditor"), member("ag_search-product-misc", "Search product, misc."), member("ag_vent", "vent")];
+  const asks = (out: ReturnType<typeof agentPattern>) => out.flagged.filter(flag => flag.kind.startsWith("ask_"));
+
+  const unsorted = agentPattern(members, [], NOW);
+  assert.deepEqual([unsorted.metrics.agents_off_pattern, unsorted.metrics.asks_unheld, unsorted.metrics.asks_unsorted], [0, 0, 1]);
+  assert.deepEqual(asks(unsorted).map(flag => [flag.kind, flag.sig, flag.handOff, flag.item]), [["ask_unsorted", "ask-unsorted/#1124-cost-management p33", true, undefined]]);
+  assert.match(asks(unsorted)[0]!.excerpt, /#1124-cost-management p33 \(msg mx0amn69\).*reached fable auditor, Search product, misc\., vent: "\+properly organize this chart to be daily\..*primiary chart"/);
+  assert.deepEqual(unsorted.messages, [], "an unsorted candidate nudges nobody");
+
+  const oneTime = agentPattern(members, [], NOW, { standing: [], one_time: [{ ref: "#1124-cost-management p33", why: "a one-time chart change" }] });
+  assert.deepEqual(asks(oneTime), []);
+  assert.deepEqual([oneTime.metrics.agents_off_pattern, oneTime.metrics.asks_unheld, oneTime.metrics.asks_unsorted], [0, 0, 0]);
+
+  // The ask is for devops guy, who is no member of the room: `asksTo` reads the post for it from the standing entry.
+  const devops = { agent: { id: "ag_devops-guy", name: "devops guy", thread: "t-devops" }, brief: "Devops", duties: [duty("d1", "Nothing outside Komodo", ["met"])], asks: [p33] };
+  const standing = agentPattern([...members, devops], [], NOW, { standing: [{ ref: "#1124-cost-management p33", agent: "ag_devops-guy", why: "he wants the cost charts kept daily" }], one_time: [] });
+  assert.deepEqual(asks(standing).map(flag => [flag.kind, flag.sig]), [["ask_unheld", "ag_devops-guy/ask/#1124-cost-management p33"]]);
+  assert.deepEqual([standing.metrics.agents_off_pattern, standing.metrics.asks_unheld, standing.metrics.asks_unsorted], [1, 1, 0]);
+  assert.deepEqual(standing.messages.map(message => message.agent), ["ag_devops-guy"]);
+  // An entry matches by a message id too, so a renamed room keeps its sorted posts; the agent may be given by name.
+  const byMsg = agentPattern([...members, devops], [], NOW, { standing: [{ ref: "#cost p33", msg: "mx0amn69", agent: "devops guy" }], one_time: [] });
+  assert.deepEqual(asks(byMsg).map(flag => flag.sig), ["ag_devops-guy/ask/#1124-cost-management p33"]);
+  // A standing ask a duty of its agent names is held and flags nothing.
+  const held = agentPattern([...members, { ...devops, duties: [{ duty: { id: "d2", name: "Cost charts stay daily", status: "active", ownerWords: "(#1124-cost-management p33)" }, paused: false, runs: [{ verdict: "met" }] }] }], [], NOW,
+    { standing: [{ ref: "#1124-cost-management p33", agent: "ag_devops-guy" }], one_time: [] });
+  assert.deepEqual(asks(held), []);
+});
+
+test("an unsorted candidate gives an agent with no brief no area, is still handed off, and a duty of the agent that names it makes it standing", () => {
+  const ask: Ask = { ref: "dm_feature-probe p2", ids: [], at: NOW - HOUR, text: "make this chart daily" };
+  const probe = { agent: { id: "ag_feature-probe", name: "feature probe" }, duties: [duty("d1", "Its own duty", ["met"])], asks: [ask] };
+  const out = agentPattern([probe], [], NOW);
+  assert.deepEqual(out.flagged.map(flag => flag.kind), ["no_area", "ask_unsorted"]);
+  assert.equal(out.metrics.agents_off_pattern, 0);
+  const quoted = agentPattern([{ ...probe, duties: [{ duty: { id: "d1", name: "Chart", status: "active", goal: "dm_feature-probe p2" }, paused: false, runs: [{ verdict: "met" }] }] }], [], NOW);
+  assert.deepEqual(quoted.flagged.filter(flag => flag.kind === "no_area" || flag.kind.startsWith("ask_")), []);
+});
+
+test("the sorted-asks file is optional, and a file of another shape throws", () => {
+  const dir = mkdtempSync(join(tmpdir(), "asks-"));
+  assert.deepEqual(readAsks(join(dir, "none.json")), { standing: [], one_time: [] });
+  const file = join(dir, "asks.json");
+  writeFileSync(file, JSON.stringify({ standing: [{ ref: "#dev-api-portal p25", msg: "mwwk8mcw", agent: "ag_api-portal", why: "keep watching" }], one_time: [{ ref: "#sw-factory-build p250", why: "a design question" }] }));
+  assert.equal(readAsks(file).standing[0]!.agent, "ag_api-portal");
+  for (const bad of [{ standing: [{ ref: "#x p1" }], one_time: [] }, { standing: [] }, { standing: [], one_time: ["#x p1"] }, []]) {
+    writeFileSync(file, JSON.stringify(bad));
+    assert.throws(() => readAsks(file), /is not \{standing/);
+  }
+});
+
+test("asksTo reads a post a standing entry gives the agent from any real room, whatever its words, tags and members", () => {
+  const store = {
+    rooms: { rooms: [
+      { id: "ch_1", kind: "channel", name: "1124-cost-management", archived: false, members: [{ agent: "ag_vent", wakeOn: "all" }] },
+      { id: "ch_2", kind: "channel", name: "test-room", archived: false, test: true, members: [] },
+    ] },
+    postsOf: (room: string) => ({
+      ch_1: [
+        { id: "p33", author: "owner", text: "@vent keep the cost chart current", at: NOW - HOUR, mentions: ["ag_vent"], inputs: [{ at: NOW - HOUR + 5 }] },
+        { id: "p34", author: "owner", text: "check this daily", at: NOW - HOUR },
+        { id: "p35", author: "owner", text: "an old one", at: NOW - 30 * HOUR },
+      ],
+      ch_2: [{ id: "p1", author: "owner", text: "watch this daily", at: NOW - HOUR }],
+    } as Record<string, unknown[]>)[room] ?? [],
+  };
+  const devops = { id: "ag_devops-guy", name: "devops guy" };
+  assert.deepEqual(asksTo(store, devops, NOW - 24 * HOUR), [], "no member, and no post given to it");
+  const given = [{ ref: "#1124-cost-management p33" }, { ref: "#renamed p34", msg: "nomatch" }, { ref: "#1124-cost-management p35" }, { ref: "#test-room p1" }];
+  assert.deepEqual(asksTo(store, devops, NOW - 24 * HOUR, given).map(item => item.ref), ["#1124-cost-management p33"], "a post before the brief and a test room stay out");
+  assert.deepEqual(asksTo(store, devops, NOW - 24 * HOUR, [{ ref: "#old-name p33", msg: (NOW - HOUR + 5).toString(36) }]).map(item => item.ref), ["#1124-cost-management p33"]);
+});
+
+test("a check-in is not late right after the plan gets its first open step: the shorter interval counts from then", () => {
+  // fable auditor at 19:55 KST 11-28: daily check-ins on an empty plan, a step opened 13 h after the last one, and d7 read it 18 s later.
+  const iso = (at: number) => new Date(at).toISOString();
+  assert.equal(planOpenSince({ plan: [{ status: "done", updatedAt: iso(NOW - 40 * HOUR), children: [{ status: "done" }] }] }), null);
+  assert.equal(planOpenSince({ plan: [{ status: "done", children: [{ status: "doing", updatedAt: iso(NOW - 18_000) }] }] }), NOW - 18_000);
+  assert.equal(planOpenSince({ plan: [{ status: "todo", updatedAt: iso(NOW - 18_000) }, { status: "blocked", updatedAt: iso(NOW - 30 * HOUR) }] }), NOW - 30 * HOUR, "the oldest open step");
+  assert.equal(planOpenSince({ plan: [{ status: "todo", updatedAt: iso(NOW - 18_000) }, { status: "todo" }] }), 0, "an open step with no time has been open for as long as anyone knows");
+  const review: DutyRow = {
+    duty: { id: "d1", name: "Area review", status: "active" }, paused: false, schedule: { kind: "daily", at: "05:40" }, nextAt: NOW + 20 * HOUR,
+    runs: [{ verdict: "met", at: NOW - HOUR, metrics: { corrections_unsaved: { value: 0 } }, job: { id: "j" } }],
+  };
+  const fable = (planOpenAt: number | null) => ({
+    agent: { id: "ag_fable-auditor", name: "fable auditor" }, brief: "Audit", duties: [review], planOpenAt,
+    checkIn: { everyMs: 180 * 60_000, paused: false, lastAt: NOW - 13 * HOUR, runs: [{ at: NOW - 13 * HOUR }] },
+  });
+  const late = (planOpenAt: number | null) => agentPattern([fable(planOpenAt)], [], NOW).flagged.filter(flag => flag.kind === "common_late").map(flag => flag.excerpt);
+  assert.deepEqual(late(NOW - 18_000), []);
+  assert.deepEqual(late(NOW - 5 * HOUR), [], "within 2 intervals of the step opening");
+  assert.deepEqual(late(NOW - 7 * HOUR), ["fable auditor: its check-in last ran 13 h ago on a 180 min interval"]);
+  assert.deepEqual(late(0).length, 1);
+  assert.deepEqual(late(null).length, 1, "a read with no plan time judges by the last run alone");
+  // d5 reads the same check-in with 1.5 intervals.
+  const board = (planOpenAt: number | null) => agentBoards([{
+    agent: { id: "ag_fable-auditor", name: "fable auditor" }, steps: { open: 1, stuck: [], gaps: [] }, planOpenAt,
+    checkIn: { everyMs: 3 * HOUR, paused: false, lastAt: NOW - 13 * HOUR, runs: [{ at: NOW - 13 * HOUR, verdict: "met", summary: "" }] },
+  }], NOW).metrics.checkins_late;
+  assert.deepEqual([board(NOW - 18_000), board(NOW - 5 * HOUR), board(null)], [0, 1, 1]);
 });
 
 test("a missing n on an Area review run from before release-11e4c28 is not flagged; a later one and any other duty's newest run are", () => {

@@ -22,6 +22,9 @@
  * c249 (#sw-factory-build p234, msg mwwklmfk, 11-26) d7 also checks each agent's two common duties (`agentPattern`) and its output carries
  * `messages`, one nudge per agent off the pattern in the shape of ~/work/agent-duties/messages.json, which the work thread relays. Since
  * the owner's p237 (msg mwwksq7v) it also counts wiki clutter (`wikiClutter`), read from the wiki config's content root and agents mount.
+ * Since 11-28 a post the `ONGOING` words match is a candidate, and the sorted-asks file (ASKS_FILE, default ~/work/agent-duties/asks.json,
+ * `--asks <file>`) decides it: `standing` gives an ask to one agent, `one_time` drops a post, and a post in neither list is handed to the duty
+ * job as `ask_unsorted` (`SortedAsks`).
  * Without OUTPUT_FILE the result prints to stdout.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -129,7 +132,9 @@ export const AREA_REVIEW_N_SINCE = Date.parse("2026-11-25T20:54:00Z");
 export interface PushRead { everyMs: number; planEveryMs?: number; paused: boolean; lastAt: number | null; runs?: { at: number }[] }
 export interface AgentRead {
   agent: Agent; duties: readonly DutyRow[]; brief?: string; checkIn?: PushRead; stuck?: number; boardAt?: number | null;
-  /** The owner's ongoing asks to the agent since its brief (`ongoingAsk`). */
+  /** Since when the plan has surely held an open step (`planOpenSince`), null with none; the check-in's shorter interval counts from here. */
+  planOpenAt?: number | null;
+  /** The owner's posts to the agent since its brief that may ask for ongoing care (`asksTo`): candidates until the sorted-asks file decides them. */
   asks?: readonly Ask[];
   /** Per paused duty id, since when it is paused (the duty's `updatedAt` in its duties file) and the sentence that gives its reason, if any. */
   pauses?: Readonly<Record<string, { since: number; reason?: string }>>;
@@ -191,6 +196,32 @@ export const ONGOING = new RegExp([
   "계속 ?(확인|관찰|감시|모니터|봐|지켜)", "매일", "관찰", "감시", "항상",
 ].join("|"), "i");
 export const ongoingAsk = (text: string): boolean => ONGOING.test(text);
+
+/** One sorted owner post: `ref` is "#room pN" as the precheck prints it, `msg` one of its Prime message ids, which still matches after a room is renamed. */
+export interface SortedAsk { ref: string; msg?: string; why?: string }
+/**
+ * The sorted-asks file, ~/work/agent-duties/asks.json. The `ONGOING` words cannot tell "make this chart daily" from "check this daily": on
+ * 11-28 they read #sw-factory-build p250, a design question, and #1124-cost-management p33, a one-time chart change, as ongoing asks, and p33
+ * put its room's three members off the pattern. So a match is a candidate, and d7's duty job reads each post and sorts it here, as d4's job
+ * sorts style notes in ~/work/owner-style/notes.json. `standing` holds the asks for ongoing care, each with the one agent it is for (id or
+ * name); `one_time` holds the posts that only read like one.
+ */
+export interface SortedAsks { standing: readonly (SortedAsk & { agent: string })[]; one_time: readonly SortedAsk[] }
+export const NO_SORTED_ASKS: SortedAsks = { standing: [], one_time: [] };
+/** The entry that names the ask, by its ref or by one of its message ids. */
+export const sortedAs = <E extends SortedAsk>(ask: Ask, entries: readonly E[]): E | undefined =>
+  entries.find(entry => entry.ref === ask.ref || (entry.msg !== undefined && ask.ids.includes(entry.msg)));
+
+/** The sorted-asks file, or empty lists when it is absent. Any other shape throws, so a bad write never reads as sorted. */
+export function readAsks(file: string): SortedAsks {
+  if (!existsSync(file)) return NO_SORTED_ASKS;
+  const data = JSON.parse(readFileSync(file, "utf8")) as { standing?: unknown; one_time?: unknown } | null;
+  const entries = (list: unknown, agent: boolean): boolean => Array.isArray(list) && list.every((entry: Partial<SortedAsk & { agent: unknown }> | null) =>
+    typeof entry?.ref === "string" && (entry.msg === undefined || typeof entry.msg === "string") && (!agent || typeof entry.agent === "string"));
+  if (!data || !entries(data.standing, true) || !entries(data.one_time, false)) throw new Error(`${file} is not {standing: [{ref, msg, agent, why}], one_time: [{ref, msg, why}]}`);
+  return data as SortedAsks;
+}
+
 const squash = (text: string): string => text.toLowerCase().replace(/\s+/g, " ").trim();
 
 /** Whether a duty names the ask: its message id, its "#room pN" ref or its first 40 characters, in the duty's name, owner words or goal. */
@@ -267,20 +298,27 @@ const OFF_PATTERN_KINDS = new Set([...NUDGE_KINDS].filter(kind => kind !== "no_s
  * A board push is empty when the board has stuck steps and has not changed in 24 h. An area review run is empty when it started no job
  * and its readings (`REVIEW_READINGS`) are 0. Each agent off the pattern gets one nudge listing its misses.
  */
-export function agentPattern(agents: readonly AgentRead[], areas: readonly AgentAreas[] = [], now = Date.now()): { metrics: Record<string, number>; flagged: Flag[]; messages: Nudge[] } {
-  const coverage = dutyCoverage(agents, areas, now);
+export function agentPattern(agents: readonly AgentRead[], areas: readonly AgentAreas[] = [], now = Date.now(), sorted: SortedAsks = NO_SORTED_ASKS): { metrics: Record<string, number>; flagged: Flag[]; messages: Nudge[] } {
+  const named = (entry: { agent: string }, agent: Agent): boolean => entry.agent === agent.id || entry.agent === agent.name;
+  // An agent's standing asks: the posts the sorted file gives it, and a post in neither list that one of its own duties already names.
+  const standing = (read: AgentRead): Ask[] => (read.asks ?? []).filter(ask => {
+    const entry = sortedAs(ask, sorted.standing);
+    return entry ? named(entry, read.agent) : !sortedAs(ask, sorted.one_time) && askHeld(ask, read.duties);
+  });
+  const coverage = dutyCoverage(agents.map(read => ({ ...read, asks: standing(read) })), areas, now);
   const flagged = [...coverage.flagged];
   const noArea = new Set(coverage.flagged.filter(flag => flag.kind === "no_area").map(flag => flag.item));
   let missing = 0;
   let late = 0;
   let empty = 0;
   let unheld = 0;
+  const unsorted = new Map<string, { ask: Ask; reached: string[] }>();
   let stale = 0;
   let zero = 0;
   let noN = 0;
   let duplicates = 0;
   const everyDuty = agents.flatMap(({ agent, duties }) => duties.map(row => ({ ...row, agent })));
-  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, waitsOutside = [], outputs = {}, handOffJobs = {} } of agents) {
+  for (const { agent, duties, checkIn, stuck = 0, boardAt, planOpenAt, asks = [], pauses = {}, samples = {}, waitsOutside = [], outputs = {}, handOffJobs = {} } of agents) {
     for (const row of duties) {
       const repeats = duplicateJobs(handOffJobs[row.duty.id] ?? [], now);
       if (!repeats.length) continue;
@@ -290,9 +328,11 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
       flagged.push({ kind: "duplicate_job", sig: `${agent.id}/${row.duty.id}/duplicates`, item: agent.id,
         excerpt: `${agent.name}: ${row.duty.id} "${row.duty.name}" started ${extra} extra jobs for ${repeats.length} hand-off${repeats.length === 1 ? "" : "s"} within a day, such as ${jobs} jobs for ${sig.slice(0, 80)}` });
     }
-    if (noArea.has(agent.id)) continue;
     const flag = (kind: string, key: string, excerpt: string) => flagged.push({ kind, sig: `${agent.id}/${key}`, item: agent.id, excerpt: `${agent.name}: ${excerpt}` });
     for (const ask of asks) {
+      // A one-time post is dropped, and a standing ask counts only for the agent the sorted file names, not for every member of its room.
+      const entry = sortedAs(ask, sorted.standing);
+      if (entry ? !named(entry, agent) : sortedAs(ask, sorted.one_time) !== undefined) continue;
       if (askHeld(ask, duties)) continue;
       // An ask another agent's live duty holds is held: on 11-26 product analytics bot's d3 "API portal usage" quoted #api-portal-outreach p1,
       // which d7 had given to VP of GTM and API portal as members of that room.
@@ -301,9 +341,15 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
         flag("ask_held_elsewhere", `ask/${ask.ref}`, `the owner's ongoing ask ${ask.ref} is held by ${other.agent.name}'s ${other.duty.id} "${other.duty.name}"`);
         continue;
       }
+      if (!entry) {
+        // In neither list and named by no duty: a candidate for the duty job to sort, which puts no agent off the pattern.
+        unsorted.set(ask.ref, { ask, reached: [...unsorted.get(ask.ref)?.reached ?? [], agent.name] });
+        continue;
+      }
       unheld += 1;
       flag("ask_unheld", `ask/${ask.ref}`, `the owner's ongoing ask ${ask.ref}${ask.ids[0] ? ` (msg ${ask.ids.at(-1)})` : ""}, "${squash(ask.text).slice(0, 140)}", is named by no duty`);
     }
+    if (noArea.has(agent.id)) continue;
     for (const row of duties) {
       const pause = pauses[row.duty.id];
       if (pausedDuty(row) && pause && stalePause(pause, now)) {
@@ -330,7 +376,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
       flag("common_missing", "push", checkIn.paused ? "its check-in, the 3-hourly board push, is paused" : `its check-in, the board push, runs every ${Math.round(pushMs / 60_000)} min, not every 180 min or less`);
     } else {
       const newest = checkIn.runs?.[0]?.at ?? checkIn.lastAt;
-      if (newest === null || now - newest > 2 * checkIn.everyMs) {
+      if (newest === null || now - Math.max(newest, planOpenAt ?? 0) > 2 * checkIn.everyMs) {
         late += 1;
         flag("common_late", "push/late", newest === null ? "its check-in has never run" : `its check-in last ran ${Math.round((now - newest) / 3_600_000)} h ago on a ${Math.round(checkIn.everyMs / 60_000)} min interval`);
       }
@@ -362,6 +408,10 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
       flag("empty_run", `review/${review.duty.id}/empty`, `its ${review.duty.id} "${review.duty.name}" ran with no job, no wiki page and no memory change`);
     }
   }
+  for (const [ref, { ask, reached }] of unsorted) {
+    flagged.push({ kind: "ask_unsorted", sig: `ask-unsorted/${ref}`, handOff: true,
+      excerpt: `the owner's post ${ref}${ask.ids[0] ? ` (msg ${ask.ids.at(-1)})` : ""} may ask for ongoing care and the sorted-asks file names it in neither list; it reached ${reached.join(", ")}: "${squash(ask.text).slice(0, 300)}"` });
+  }
   const messages: Nudge[] = [];
   for (const { agent } of agents) {
     const misses = flagged.filter(flag => flag.item === agent.id && NUDGE_KINDS.has(flag.kind)).map(flag => flag.excerpt.replace(/^[^:]*:\s*/, ""));
@@ -375,7 +425,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   return {
     metrics: {
       agents_off_pattern: new Set(flagged.filter(flag => OFF_PATTERN_KINDS.has(flag.kind)).map(flag => flag.item)).size, common_duties_missing: missing, common_duties_late: late, empty_runs: empty, ...coverage.metrics,
-      asks_unheld: unheld, pauses_stale: stale, met_on_zero: zero, runs_without_n: noN, duplicate_jobs: duplicates,
+      asks_unheld: unheld, asks_unsorted: unsorted.size, pauses_stale: stale, met_on_zero: zero, runs_without_n: noN, duplicate_jobs: duplicates,
       duties_stopped: coverage.metrics.duties_paused! + coverage.metrics.duties_overdue!,
     },
     flagged, messages,
@@ -471,16 +521,17 @@ export function readAreas(file: string): AgentAreas[] {
 /** Prime's late rule (checkin-schedule.ts): a check-in with no run in 1.5 intervals is late. */
 export const LATE_INTERVALS = 1.5;
 
-export interface Flag { kind: string; sig: string; item?: string; excerpt: string }
+/** `handOff` gives the item to the duty job, once a day per sig (server/duty-run.ts `measure`). */
+export interface Flag { kind: string; sig: string; item?: string; excerpt: string; handOff?: true }
 
 /** The precheck output for the agents' steps and check-ins read at `now`; `n` is the count of agents it read. */
-export function agentBoards(agents: readonly { agent: Agent; steps: Steps; checkIn: CheckIn }[], now: number): { n: number; metrics: Record<string, number>; flagged: Flag[] } {
+export function agentBoards(agents: readonly { agent: Agent; steps: Steps; checkIn: CheckIn; planOpenAt?: number | null }[], now: number): { n: number; metrics: Record<string, number>; flagged: Flag[] } {
   const flagged: Flag[] = [];
   let open = 0;
   let stuck = 0;
   let gaps = 0;
   let late = 0;
-  for (const { agent, steps, checkIn } of agents) {
+  for (const { agent, steps, checkIn, planOpenAt } of agents) {
     open += steps.open;
     stuck += steps.stuck.length;
     gaps += steps.gaps.length;
@@ -490,7 +541,7 @@ export function agentBoards(agents: readonly { agent: Agent; steps: Steps; check
     }
     for (const goal of steps.gaps) flagged.push({ kind: "goal_gap", sig: `${agent.id}/${goal.id}`, item: goal.id, excerpt: `${agent.name} ${goal.id} "${goal.text.slice(0, 120)}" is short of its target and no live job owns it` });
     const newest = checkIn.runs?.[0]?.at ?? checkIn.lastAt;
-    if (!checkIn.paused && newest !== null && now - newest > LATE_INTERVALS * checkIn.everyMs) {
+    if (!checkIn.paused && newest !== null && now - Math.max(newest, planOpenAt ?? 0) > LATE_INTERVALS * checkIn.everyMs) {
       late += 1;
       flagged.push({ kind: "checkin_late", sig: `${agent.id}/checkin/${newest}`, excerpt: `${agent.name}'s check-in last ran ${Math.round((now - newest) / 60_000)} min ago on a ${Math.round(checkIn.everyMs / 60_000)} min interval` });
     }
@@ -499,7 +550,28 @@ export function agentBoards(agents: readonly { agent: Agent; steps: Steps; check
 }
 
 /** An agent's board as GET /board returns it, the fields `pauseReason` reads. */
-interface BoardRead { updatedAt?: string; plan?: { text?: string; note?: string; children?: unknown[] }[]; todos?: { text?: string; note?: string }[] }
+interface BoardRead { updatedAt?: string; plan?: { text?: string; note?: string; status?: string; updatedAt?: string; children?: unknown[] }[]; todos?: { text?: string; note?: string }[] }
+
+/** The step statuses that keep a plan open (server/check-in-job.ts `planHasOpenStep`). */
+const OPEN_STEP = new Set(["todo", "doing", "blocked"]);
+/**
+ * Since when the plan has surely held an open step: the oldest `updatedAt` among its open steps, 0 when one carries none, null with no open
+ * step. The server runs the check-in daily while the plan has no open step and at its set interval from the moment one opens
+ * (server/check-in-job.ts `planEveryMs`), so a check-in is late only when no run came in that interval's allowance after the later of its
+ * last run and this time. On 11-28 at 19:55:30 KST fable auditor's plan got its first open step 13 h after its daily check-in; d7 read the
+ * check-in 18 s before the server's next tick ran it and flagged "last ran 13 h ago on a 180 min interval".
+ */
+export function planOpenSince(board: BoardRead | undefined): number | null {
+  let since: number | null = null;
+  const walk = (steps: NonNullable<BoardRead["plan"]> = []) => {
+    for (const step of steps) {
+      if (OPEN_STEP.has(step.status ?? "")) since = Math.min(since ?? Infinity, (step.updatedAt && Date.parse(step.updatedAt)) || 0);
+      walk(step.children as typeof steps | undefined);
+    }
+  };
+  walk(board?.plan);
+  return since;
+}
 
 /** A JSON file, or undefined when it is absent or not JSON. */
 function readJson<T = unknown>(file: string): T | undefined {
@@ -525,18 +597,27 @@ export function pauseReason(row: DutyRow, board: BoardRead | undefined): string 
   return undefined;
 }
 
-/** The owner's ongoing asks to an agent since `since`: his DM posts and the group posts that tag it, or reach it untagged as a member. */
-export function asksTo(store: { rooms: { rooms: readonly unknown[] }; postsOf(room: string): readonly unknown[] }, agent: Agent, since: number): Ask[] {
+/**
+ * The owner's posts to an agent since `since` that may ask for ongoing care: his DM posts and the group posts that tag it, or reach it
+ * untagged as a member, whose words match `ONGOING`. A post one of the `given` entries names, the standing asks the sorted file gives this
+ * agent, counts in any real room whatever its words, tags and members: the agent an ask is for may sit outside the room it was posted in.
+ */
+export function asksTo(store: { rooms: { rooms: readonly unknown[] }; postsOf(room: string): readonly unknown[] }, agent: Agent, since: number, given: readonly SortedAsk[] = []): Ask[] {
   const asks: Ask[] = [];
   for (const room of store.rooms.rooms as { id: string; kind: string; agent?: string; name?: string; test?: true; archived: boolean; members?: { agent: string; wakeOn: string }[] }[]) {
     if (room.test || room.archived) continue;
     const dm = room.kind === "dm";
-    if (dm ? room.agent !== agent.id : !room.members?.some(member => member.agent === agent.id)) continue;
+    const member = dm ? room.agent === agent.id : room.members?.some(entry => entry.agent === agent.id) ?? false;
+    if (!member && !given.length) continue;
     for (const post of store.postsOf(room.id) as { id: string; author: string; text?: string; at: number; deletedAt?: number; mentions?: string[]; inputs?: { at: number }[] }[]) {
-      if (post.author !== "owner" || post.deletedAt !== undefined || post.at <= since || !ongoingAsk(post.text ?? "")) continue;
-      const tagged = (post.mentions ?? []).filter(id => id !== "owner");
-      if (!dm && tagged.length && !tagged.includes(agent.id)) continue;
-      asks.push({ ref: `${dm ? room.id : `#${room.name ?? room.id}`} ${post.id}`, ids: (post.inputs ?? []).map(input => input.at.toString(36)), at: post.at, text: post.text ?? "" });
+      if (post.author !== "owner" || post.deletedAt !== undefined || post.at <= since) continue;
+      const ask: Ask = { ref: `${dm ? room.id : `#${room.name ?? room.id}`} ${post.id}`, ids: (post.inputs ?? []).map(input => input.at.toString(36)), at: post.at, text: post.text ?? "" };
+      if (!sortedAs(ask, given)) {
+        if (!member || !ongoingAsk(ask.text)) continue;
+        const tagged = (post.mentions ?? []).filter(id => id !== "owner");
+        if (!dm && tagged.length && !tagged.includes(agent.id)) continue;
+      }
+      asks.push(ask);
     }
   }
   return asks;
@@ -551,21 +632,28 @@ async function get<T>(server: string, path: string): Promise<T> {
 if (isMain(import.meta.url)) {
   // `--part boards` (the default, d5 "Agent boards") reads steps and check-ins; `--part duties` (agent factory's "Agents keep their duties")
   // reads each agent's duties, brief and areas.
-  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, part: { type: "string" }, wiki: { type: "string" }, "data-dir": { type: "string" } } });
+  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, asks: { type: "string" }, part: { type: "string" }, wiki: { type: "string" }, "data-dir": { type: "string" } } });
   const part = values.part ?? "boards";
   if (part !== "boards" && part !== "duties") throw new Error(`--part ${part} is neither boards nor duties`);
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const areasFile = values.areas ?? process.env.AREAS_FILE ?? join(homedir(), "work/agent-duties/areas.json");
+  const asksFile = values.asks ?? process.env.ASKS_FILE ?? join(homedir(), "work/agent-duties/asks.json");
   const agents = realAgents(await get<Agent[]>(server, "/api/agents")).filter(agent => agent.hostState !== "away");
   const json = part === "boards"
     ? JSON.stringify(agentBoards(await Promise.all(agents.map(async agent => ({
       agent, steps: await get<Steps>(server, `/api/agents/${agent.id}/steps`), checkIn: await get<CheckIn>(server, `/api/agents/${agent.id}/check-in`),
+      planOpenAt: planOpenSince((await get<{ board?: BoardRead }>(server, `/api/agents/${agent.id}/board`)).board),
     }))), Date.now()), null, 1)
     : JSON.stringify(await (async () => {
       const now = Date.now();
       const dataDir = values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat");
       const { AgentStore } = await import("../../server/agent-store.ts");
       const store = new AgentStore(dataDir);
+      const sorted = readAsks(asksFile);
+      // A standing ask given to a name no agent has, an archived one included, would count for nobody: stop, so a typo never reads as held.
+      const known = new Set((await get<Agent[]>(server, "/api/agents?archived=1")).flatMap(agent => [agent.id, agent.name]));
+      const stray = sorted.standing.filter(entry => !known.has(entry.agent));
+      if (stray.length) throw new Error(`${asksFile} gives ${stray.map(entry => `${entry.ref} to "${entry.agent}"`).join(", ")}, which names no agent: use an id or name from GET /api/agents`);
       const reads = await Promise.all(agents.map(async agent => {
         const [board, duties, folder, checkIn, steps, jobs] = await Promise.all([
           get<{ board?: BoardRead }>(server, `/api/agents/${agent.id}/board`).then(answer => answer.board),
@@ -602,14 +690,14 @@ if (isMain(import.meta.url)) {
         const jobsAt = [...jobs.flatMap(job => job.lastActivityAt ? [Date.parse(job.lastActivityAt)] : []), ...duties.flatMap(row => row.runs.flatMap(run => run.job && run.at ? [run.at] : []))];
         return {
           read: {
-            agent, duties, checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null, pauses, samples, waitsOutside, outputs, handOffJobs,
+            agent, duties, checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null, planOpenAt: planOpenSince(board), pauses, samples, waitsOutside, outputs, handOffJobs,
             // An unread folder leaves its brief unknown: the agent keeps its area and its asks wait for a run that reads the brief.
-            ...folder ? { brief: folder.brief?.text ?? "", asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0) } : { brief: "(its folder did not answer)", asks: [] },
+            ...folder ? { brief: folder.brief?.text ?? "", asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0, sorted.standing.filter(entry => entry.agent === agent.id || entry.agent === agent.name)) } : { brief: "(its folder did not answer)", asks: [] },
           } satisfies AgentRead,
           jobsAt,
         };
       }));
-      const pattern = agentPattern(reads.map(entry => entry.read), readAreas(areasFile), now);
+      const pattern = agentPattern(reads.map(entry => entry.read), readAreas(areasFile), now, sorted);
       // Every agent that is not archived keeps its folder, an away one too; GET /api/agents lists no test agent.
       const live = realAgents(await get<Agent[]>(server, "/api/agents"));
       // A test agent at work now, such as d3's memory-recall agents during its run, is no leftover; one idle for a day is.
@@ -624,7 +712,7 @@ if (isMain(import.meta.url)) {
       const flagged = [...pattern.flagged, ...clutter.flagged, ...unfixed.map(flag => ({ ...flag, kind: "miss_unfixed_24h", sig: `unfixed/${flag.sig}`, excerpt: `${flag.excerpt} (flagged over a day ago, and no job of the agent worked since)` }))];
       return {
         metrics: { ...pattern.metrics, ...clutter.metrics, misses_unfixed_24h: unfixed.length }, n: agents.length, flagged, messages: pattern.messages,
-        areasFile: existsSync(areasFile) ? areasFile : null,
+        areasFile: existsSync(areasFile) ? areasFile : null, asksFile: existsSync(asksFile) ? asksFile : null,
       };
     })(), null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
