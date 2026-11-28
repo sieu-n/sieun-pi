@@ -386,7 +386,7 @@ async function prodCallRows(token: string): Promise<number> {
 
 /** Prod calls Vent refused as vent_unauthorized in 24 h that carried a key, per source address, from the columns telemetry.py writes on a refusal. */
 async function keyRefusals(token: string): Promise<KeyRefusal[]> {
-  const sql = "SELECT `client.address` AS source, toFloat64(sum(greatest(toUInt64OrZero(`vent.count`), 1))) AS calls, " +
+  const sql = "SELECT `client.address` AS source, toFloat64(count()) AS calls, " +
     "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last, arrayStringConcat(arraySort(groupUniqArrayIf(`vent.requested_integration`, `vent.requested_integration` != '')), ',') AS integrations " +
     "FROM otel.vent_calls WHERE ResourceAttributes['deployment.environment.name'] = 'production' AND Timestamp > now() - INTERVAL 24 HOUR " +
     "AND `vent.outcome` = 'refused' AND `vent.error_code` = 'vent_unauthorized' AND `vent.key_present` = 'true' " +
@@ -416,8 +416,8 @@ async function pairVolumes(token: string): Promise<PairVolume[]> {
 async function modelCalls(token: string): Promise<ModelReads> {
   const allowed = allowedModels(await ventTablesAt(HEALTH_REF));
   const sql = "SELECT ResourceAttributes['deployment.environment.name'] AS env, `vent.caller` AS caller, `vent.operation` AS operation, " +
-    "`gen_ai.request.model` AS model, toFloat64(sum(greatest(toUInt64OrZero(`vent.count`), 1))) AS calls, " +
-    "toFloat64(sumIf(greatest(toUInt64OrZero(`vent.count`), 1), `vent.outcome` = 'refused' AND `vent.error_code` = 'vent_model_not_allowed')) AS refused, " +
+    "`gen_ai.request.model` AS model, toFloat64(count()) AS calls, " +
+    "toFloat64(countIf(`vent.outcome` = 'refused' AND `vent.error_code` = 'vent_model_not_allowed')) AS refused, " +
     "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last FROM otel.vent_calls " +
     "WHERE ResourceAttributes['deployment.environment.name'] IN ('production', 'staging') AND Body = 'vent.call' AND Timestamp > now() - INTERVAL 24 HOUR " +
     "AND (`vent.integration` LIKE 'cliproxy-%' AND `vent.integration` != 'cliproxy-management' OR `vent.integration` = 'gemini' " +

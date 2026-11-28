@@ -201,7 +201,7 @@ export interface VentReads {
  */
 export const SINK_DOMAINS = ["mailsink.virev.ai", "nomail.virev.ai"] as const;
 export const TEST_SENDS_SQL = `SELECT \`vent.integration\` AS integration, \`vent.caller\` AS caller, \`vent.method\` AS method,
-  sum(greatest(toUInt64OrZero(\`vent.count\`), 1)) AS calls, toUnixTimestamp64Milli(max(Timestamp)) AS last
+  count() AS calls, toUnixTimestamp64Milli(max(Timestamp)) AS last
 FROM otel.vent_calls
 WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = 'vent.call'
   AND ResourceAttributes['deployment.environment.name'] != 'production'
@@ -214,7 +214,7 @@ WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = '
 GROUP BY integration, caller, method
 ORDER BY calls DESC`;
 /** The sends TEST_SENDS_SQL judges, faked or real: the sample size of test_calls_real_24h. */
-export const TEST_SENDS_READ_SQL = `SELECT toFloat64(sum(greatest(toUInt64OrZero(\`vent.count\`), 1))) AS calls
+export const TEST_SENDS_READ_SQL = `SELECT toFloat64(count()) AS calls
 FROM otel.vent_calls
 WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = 'vent.call'
   AND ResourceAttributes['deployment.environment.name'] != 'production'
