@@ -70,14 +70,15 @@ const closer = (then: Record<string, MetricResult>, now: Record<string, MetricRe
 });
 
 /**
- * Since when a job has not moved a missed number: the time of the newest of its runs, oldest first in `runs`, that read a missed metric
- * closer to its target than the run before which it last moved, else the run that started it. A job that started for no missed metric has no
- * number to move, so its time is its start.
+ * Since when a job has held its duty with no missed number moved: the time of the newest of its runs, oldest first in `runs`, that read a
+ * missed metric closer to its target than the run where it last moved, or that found the job waiting for a model account (`jobWaits`), else
+ * the run that started it, and never before `answeredAt`, the job's first model answer, since until then it waited for an account. A job
+ * that started for no missed metric has no number to move, so its time is its start or its first answer.
  */
-export function heldSince(runs: readonly DutyRunRecord[]): number {
+export function heldSince(runs: readonly DutyRunRecord[], answeredAt = 0): number {
   let base = runs[0]!;
-  for (const run of runs.slice(1)) if (closer(base.metrics, run.metrics)) base = run;
-  return base.at;
+  for (const run of runs.slice(1)) if (run.jobWaits || closer(base.metrics, run.metrics)) base = run;
+  return Math.max(base.at, answeredAt);
 }
 
 /**
@@ -86,13 +87,14 @@ export function heldSince(runs: readonly DutyRunRecord[]): number {
  *   no missed number closer to its target, so the run stops it and starts a new job. A job that sleeps on its own board.wake is replaced the
  *   same way: the wake says the job chose to wait, and its number did not move in a whole limit. d17's job slept on a wake for 2026-11-28T03:00Z.
  * - a job pi-pool holds for a model account is never replaced for its age: a new job would join the same line behind it (c250, and Prime's
- *   IN_POOL_LINE measure of 10 replaced jobs that each got an account later than the job they replaced).
+ *   IN_POOL_LINE measure of 10 replaced jobs that each got an account later than the job they replaced). The time it waited does not count
+ *   toward its limit either (`heldSince`), as Prime's `keptAt` gives a job that waited a whole limit of work once it runs.
  * - `steer`: the run has items no run gave the job, so it gets them in one message.
  * - `leave`: the job has all of it.
  */
 export type Beside = { do: "replace"; heldMs: number; limitMs: number } | { do: "steer" } | { do: "leave" };
-export function beside(input: { now: number; schedule: Duty["schedule"]; jobRuns: readonly DutyRunRecord[]; record: DutyRunRecord; due: boolean; waitsForAccount: boolean; fresh: number }): Beside {
-  const heldMs = input.now - heldSince([...input.jobRuns, input.record]);
+export function beside(input: { now: number; schedule: Duty["schedule"]; jobRuns: readonly DutyRunRecord[]; record: DutyRunRecord; due: boolean; waitsForAccount: boolean; answeredAt?: number; fresh: number }): Beside {
+  const heldMs = input.now - heldSince([...input.jobRuns, input.record], input.answeredAt);
   const limitMs = stuckAfterMs(input.schedule);
   if (input.due && !input.waitsForAccount && heldMs > limitMs) return { do: "replace", heldMs, limitMs };
   return input.fresh > 0 ? { do: "steer" } : { do: "leave" };
@@ -102,8 +104,8 @@ export function beside(input: { now: number; schedule: Duty["schedule"]; jobRuns
  * Whether a job's runs, oldest first, show at `now` that it held the duty past its stuck limit. A red duty with such a job gets its push run
  * though the job still works (`Boards.pushDuty`), so a daily duty's job is replaced at the first push after 12 h and not at the next day's slot.
  */
-export const heldPastLimit = (schedule: Duty["schedule"], jobRuns: readonly DutyRunRecord[], now: number): boolean =>
-  jobRuns.length > 0 && now - heldSince(jobRuns) > stuckAfterMs(schedule);
+export const heldPastLimit = (schedule: Duty["schedule"], jobRuns: readonly DutyRunRecord[], now: number, answeredAt = 0): boolean =>
+  jobRuns.length > 0 && now - heldSince(jobRuns, answeredAt) > stuckAfterMs(schedule);
 
 /** A kind or key with each word in the singular, so the kind `line_over_pace` reads as the metric `lines_over_pace`. */
 const singular = (name: string): string => name.toLowerCase().split(/[^a-z0-9]+/).map(word => word.replace(/s$/, "")).join("_");

@@ -1,6 +1,6 @@
 /**
  * How long a duty job may hold its duty before a later run replaces it. Prime's duty runner (src/chat-duty-run.ts `previous`) and sw factory's
- * (apps/chat/server/duty-beside.ts) read the one rule here.
+ * (apps/chat/server/duty-items.ts) read the one rule here.
  */
 import type { DutySchedule } from "./shared/chat-duties.ts";
 

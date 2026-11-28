@@ -855,8 +855,8 @@ export class Boards {
   private readonly accountWaits = new Map<string, number>();
   /** The duties whose account wait is being read now, so a tick reads each once. */
   private readonly waitReads = new Set<string>();
-  /** Duty jobs that got a model answer, whose entries `readAccountWait` reads no more. */
-  private readonly answered = new Set<string>();
+  /** Duty jobs that got a model answer, with the time of their first one, whose entries `readAccountWait` reads no more. */
+  private readonly answered = new Map<string, number>();
   /** Per duty job, since when pi-pool holds its tree in an account wait (`poolWaitSince`), kept while the wait lasts. */
   private readonly poolWaits = new Map<string, number>();
 
@@ -940,6 +940,7 @@ export class Boards {
         busy = undefined;
       } else {
         if (done.given.length) record.given = done.given;
+        if (done.waits) record.jobWaits = true;
         // A job that was given none of this run's items was handed none of its sigs, so the next run hands them out again.
         if (record.flagged) record.flagged = record.flagged.filter(slice => done.given.includes(itemKey(slice)));
         // The run names the job it measured beside, so the job's after-job measure lands on it too (`afterJob`) and the card reads the state
@@ -1026,8 +1027,9 @@ export class Boards {
       if (last && this.jobBusy(last, working)) {
         // A job that still works holds the push, unless it held the duty past its stuck limit and waits for no model account: the push run
         // then stops and replaces it (`besideBusyJob`), or resets its limit when it reads the number closer to its target.
-        const stuck = heldPastLimit(duty.schedule, runsOfJob(runs, last.id).sort((a, b) => a.at - b.at), now)
-          && await this.answeredOnce(last.id).catch(() => false) && (await this.poolWaitSince(last.id).catch(() => 0)) === null;
+        const jobRuns = runsOfJob(runs, last.id).sort((a, b) => a.at - b.at);
+        const answeredAt = heldPastLimit(duty.schedule, jobRuns, now) ? await this.firstAnswerAt(last.id).catch(() => null) : null;
+        const stuck = answeredAt !== null && heldPastLimit(duty.schedule, jobRuns, now, answeredAt) && (await this.poolWaitSince(last.id).catch(() => 0)) === null;
         if (!stuck) return;
       } else if (last && runs.some(run => run.job?.id === last.id && !run.after)) return;
       // A metric that counts flagged items has a fix only while an open step names each item its newest run counted (`fixesOn`), so a live
@@ -1163,43 +1165,46 @@ export class Boards {
    * said "so this run started none" and gave the job nothing: one job held devops guy's d17 for 62 h and 7 runs.
    */
   private async besideBusyJob(chat: string, duty: Duty, job: { id: string; name: string }, record: DutyRunRecord,
-    run: { brief: string | null; holds: boolean; items: RunItems; findingsFile?: string; runs: readonly DutyRunRecord[] }): Promise<{ words: string; given: string[]; replaced?: string }> {
+    run: { brief: string | null; holds: boolean; items: RunItems; findingsFile?: string; runs: readonly DutyRunRecord[] }): Promise<{ words: string; given: string[]; waits: boolean; replaced?: string }> {
     const entry = { kind: "agent.message" as const, data: { from: chat, via: `duty ${duty.id}` } };
     const requestId = `duty-handoff:${job.id}:${record.at}`;
-    if (!(await this.answeredOnce(job.id).catch(() => true))) {
+    // A failed read counts as an answer at the job's start, as it did before the answer's time was read.
+    const answeredAt = await this.firstAnswerAt(job.id).catch(() => 0);
+    if (answeredAt === null) {
       try {
-        if (!run.brief && run.holds) return { given: [], words: `; its job ${job.name} still waits for a model account and holds this run's hand-offs, so this run left it` };
+        if (!run.brief && run.holds) return { given: [], waits: true, words: `; its job ${job.name} still waits for a model account and holds this run's hand-offs, so this run left it` };
         if (!run.brief) {
           await this.host.abort(job.id);
-          return { given: [], words: `; stopped its job ${job.name}, which still waited for a model account, since nothing is due` };
+          return { given: [], waits: true, words: `; stopped its job ${job.name}, which still waited for a model account, since nothing is due` };
         }
         const text = `A newer ${duty.name} run measured while you waited for a model account: ${record.summary}. Work from the brief below instead of your first brief, since its precheck is newer.\n\n${run.brief}`;
         await this.host.submit(job.id, { text, whenBusy: "steer", requestId, entry });
-        return { given: runKeys(run.items), words: `; its job ${job.name} still waits for a model account and got this run's brief` };
+        return { given: runKeys(run.items), waits: true, words: `; its job ${job.name} still waits for a model account and got this run's brief` };
       } catch (error) {
         this.log(`duty ${chat.slice(0, 8)}/${duty.id}: reaching its waiting job ${job.name} failed: ${String(error)}`);
-        return { given: [], words: `; its job ${job.name} still waits for a model account, and reaching it failed` };
+        return { given: [], waits: true, words: `; its job ${job.name} still waits for a model account, and reaching it failed` };
       }
     }
     const since = await this.poolWaitSince(job.id).catch(() => null);
+    const waits = since !== null;
     const state = since === null ? "still works" : `is waiting for a model account since ${new Date(since + OWNER_ZONE_OFFSET_MS).toISOString().slice(11, 16)} KST`;
     const jobRuns = runsOfJob(run.runs, job.id).sort((a, b) => a.at - b.at);
     const fresh = unseen(run.items, await givenTo(jobRuns, detail => detailItems(detail, duty.id)));
-    const act = beside({ now: record.at, schedule: duty.schedule, jobRuns, record, due: run.brief !== null, waitsForAccount: since !== null, fresh: fresh.keys.length });
+    const act = beside({ now: record.at, schedule: duty.schedule, jobRuns, record, due: run.brief !== null, waitsForAccount: waits, answeredAt, fresh: fresh.keys.length });
     if (act.do === "replace") {
       const report = await this.retireJob(chat, duty.id, job);
-      return { given: [], replaced: replacedSection({ job: job.name, heldMs: act.heldMs, report }),
+      return { given: [], waits, replaced: replacedSection({ job: job.name, heldMs: act.heldMs, report }),
         words: `; replaced its job ${job.name}, which held the duty ${Math.round(act.heldMs / 3_600_000)} h with no missed number closer to its target` };
     }
     if (act.do === "steer") {
       try {
         await this.host.submit(job.id, { text: newItemsText({ duty, record, fresh, ...(run.findingsFile ? { findingsFile: run.findingsFile } : {}) }), whenBusy: "steer", requestId, entry });
-        return { given: fresh.keys, words: `; its job ${job.name} ${state} and got ${fresh.keys.length} new item${fresh.keys.length === 1 ? "" : "s"} of this run, so this run started none` };
+        return { given: fresh.keys, waits, words: `; its job ${job.name} ${state} and got ${fresh.keys.length} new item${fresh.keys.length === 1 ? "" : "s"} of this run, so this run started none` };
       } catch (error) {
         this.log(`duty ${chat.slice(0, 8)}/${duty.id}: handing its job ${job.name} ${fresh.keys.length} new items failed: ${String(error)}`);
       }
     }
-    return { given: [], words: `; its job ${job.name} ${state}, so this run started none` };
+    return { given: [], waits, words: `; its job ${job.name} ${state}, so this run started none` };
   }
 
   /**
@@ -1238,11 +1243,22 @@ export class Boards {
 
   /** Whether a duty job got a model answer that is no error; pi-pool's "the token hook gave no token" errors are no answer (`readAccountWait`). */
   private async answeredOnce(job: string): Promise<boolean> {
-    if (this.answered.has(job)) return true;
+    return (await this.firstAnswerAt(job)) !== null;
+  }
+
+  /**
+   * When a duty job got its first model answer that is no error, or null while it has none. Until then it waited for a model account, so
+   * the time it may hold its duty counts from here (`beside` in duty-items.ts): on 11-28 the walk's test job waited 2 h for its first slot.
+   */
+  private async firstAnswerAt(job: string): Promise<number | null> {
+    const kept = this.answered.get(job);
+    if (kept !== undefined) return kept;
     const { entries } = await this.host.entries(job, { after: 0, limit: 50, lean: true });
-    const answer = entries.some(entry => entry.model?.some(message => message.role === "assistant" && message.stopReason !== "error"));
-    if (answer) this.answered.add(job);
-    return answer;
+    const answer = entries.flatMap(entry => entry.model ?? []).find(message => message.role === "assistant" && message.stopReason !== "error");
+    if (!answer) return null;
+    const at = answer.timestamp ?? 0;
+    this.answered.set(job, at);
+    return at;
   }
 
   /**

@@ -67,12 +67,12 @@ const said = (job: string): string[] => (s.host as FixtureHost).threadsById.get(
   entry.kind === "agent.message" ? (entry.model ?? []).flatMap(message => message.role !== "user" ? [] : typeof message.content === "string" ? [message.content]
     : message.content.flatMap(part => part.type === "text" ? [part.text] : [])) : []);
 const aborted: string[] = [];
-const answer = (stopReason: "stop" | "error", text?: string) =>
-  ({ kind: "pi.assistant", model: [{ role: "assistant" as const, content: text ? [{ type: "text" as const, text }] : [], stopReason, timestamp: now }] });
-/** A job that answered once and still runs a turn, started `hours` ago; a stop of its turn lands in `aborted`. */
-const working = (id: string, duty: string, hours: number, text?: string) => {
+const answer = (stopReason: "stop" | "error", text?: string, at = now) =>
+  ({ kind: "pi.assistant", model: [{ role: "assistant" as const, content: text ? [{ type: "text" as const, text }] : [], stopReason, timestamp: at }] });
+/** A job that still runs a turn, started `hours` ago, whose first answer came `waited` hours later; a stop of its turn lands in `aborted`. */
+const working = (id: string, duty: string, hours: number, text?: string, waited = 0) => {
   const thread = (s.host as FixtureHost).addThread({ id, name: `Duty ${duty} job`, status: "running", createdAt: now - hours * HOUR });
-  (s.host as FixtureHost).append(thread, 1, answer("stop", text));
+  (s.host as FixtureHost).append(thread, 1, answer("stop", text, now - (hours - waited) * HOUR));
   thread.running.set(1, { stop: () => aborted.push(id) });
   return thread;
 };
@@ -110,10 +110,12 @@ before(async () => {
   // as d17's job slept on a wake for 2026-11-28T03:00Z.
   // d10: as old, and pi-pool parks its tree for an account. d11: as old, and a run an hour ago read its number closer to the target.
   working("job-works", "d8", 1);
-  host.append(host.addThread({ id: "job-stuck", name: "Duty d9 job", createdAt: now - 13 * HOUR }), 1, answer("stop", "up is 90. I wait for the vendor to answer."));
+  host.append(host.addThread({ id: "job-stuck", name: "Duty d9 job", createdAt: now - 13 * HOUR }), 1, answer("stop", "up is 90. I wait for the vendor to answer.", now - 13 * HOUR));
   working("job-old-parked", "d10", 13);
   working("job-moving", "d11", 13);
   working("job-hung", "d12", 13);
+  // d13: its job started 13 h ago and waited 12 h for its first model answer, so it has worked 1 h.
+  working("job-late", "d13", 13, undefined, 12);
   for (const id of ["d8", "d9"]) writeFileSync(join(work, `${id}.out`), JSON.stringify({ n: 1, metrics: { up: 90 } }));
   writeFileSync(join(work, "d12.up"), "90");
   const pool = process.env.PI_POOL_DIR!;
@@ -128,14 +130,14 @@ before(async () => {
   await s.app.threads.refresh();
   await s.app.boards.addWake("job-stuck", { on: { kind: "time", at: now + 24 * HOUR }, note: "look at the bill again" });
   await s.app.boards.saveDuties(ids.vent, {
-    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5"), duty("d6"), noN("d7"), flagging("d8"), flagging("d9"), duty("d10"), duty("d11"), fixable("d12")]
+    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5"), duty("d6"), noN("d7"), flagging("d8"), flagging("d9"), duty("d10"), duty("d11"), fixable("d12"), duty("d13")]
       .map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
     runs: { d1: [missed("d1", now - HOUR, "job-asleep")], d2: [missed("d2", now - HOUR, "job-queued")], d3: [missed("d3", now - HOUR, "job-done")], d4: [missed("d4", now - HOUR, "job-held")],
       d5: [missed("d5", now - HOUR, "job-d5")], d6: [missed("d6", now - 3 * HOUR, "job-parked")],
       d7: [{ ...missed("d7", now - HOUR, "job-holds"), flagged: [{ kind: "no_sample_size", excerpt: "add n", handOff: true, sig: "d7/n" }] }],
       d8: [missed("d8", now - HOUR, "job-works")], d9: [missed("d9", now - 13 * HOUR, "job-stuck")], d10: [missed("d10", now - 13 * HOUR, "job-old-parked")],
       d11: [{ ...missed("d11", now - HOUR, "job-moving"), metrics: { up: { value: 95, target: 99, op: ">=", met: false } } }, missed("d11", now - 13 * HOUR, "job-moving")],
-      d12: [missed("d12", now - 13 * HOUR, "job-hung")] },
+      d12: [missed("d12", now - 13 * HOUR, "job-hung")], d13: [missed("d13", now - 13 * HOUR, "job-late")] },
   } as DutyFile);
 });
 after(async () => {
@@ -239,9 +241,10 @@ test("a tick gives a red duty whose working job held it past the limit a push ru
   assert.deepEqual(aborted.filter(id => id === "job-hung"), ["job-hung"], "its running turn is stopped");
   // The same tick pushed neither the job that waits for a model account nor the one that moved its number an hour ago.
   assert.deepEqual([runsOf("d10").length, (await row("d10")).running, runsOf("d11").length, (await row("d11")).running], [1, false, 2, false]);
+  assert.deepEqual([runsOf("d13").length, (await row("d13")).running], [1, false], "nor the job that got its first model answer an hour ago");
 });
 
-test("a job past the limit that waits for a model account, or that moved its number, is not replaced", async () => {
+test("a job past the limit that waits for a model account, that moved its number, or that got its first answer late, is not replaced", async () => {
   const clock = new Date(now - 2 * HOUR + 9 * HOUR).toISOString().slice(11, 16);
   await run("d10");
   await until(() => Promise.resolve(runsOf("d10")), runs => runs.length === 2);
@@ -250,7 +253,12 @@ test("a job past the limit that waits for a model account, or that moved its num
   await run("d11");
   await until(() => Promise.resolve(runsOf("d11")), runs => runs.length === 3);
   assert.match(runsOf("d11")[0]!.summary, /its job Duty d11 job still works, so this run started none$/);
-  assert.deepEqual(aborted.filter(id => id === "job-old-parked" || id === "job-moving"), []);
+  assert.equal(runsOf("d10")[0]!.jobWaits, true, "the run records the wait, so the job's limit counts from it");
+  // The time a job waited for its first model answer is no time it held the duty.
+  await run("d13");
+  await until(() => Promise.resolve(runsOf("d13")), runs => runs.length === 2);
+  assert.match(runsOf("d13")[0]!.summary, /its job Duty d13 job still works, so this run started none$/);
+  assert.deepEqual(aborted.filter(id => id === "job-old-parked" || id === "job-moving" || id === "job-late"), []);
 });
 
 test("a job that answered once and whose subagent pi-pool parks for an account reads as waiting since the pool's wait began", async () => {

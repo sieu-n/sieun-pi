@@ -192,6 +192,8 @@ export interface DutyRunRecord {
   given?: string[];
   /** The duty job this run stopped and replaced, since it held the duty past its stuck limit with no missed number closer to its target. */
   replaced?: { id: string; name: string };
+  /** The job this run names waited for a model account when the run looked, so the time it may hold the duty counts from this run (`heldSince`). */
+  jobWaits?: true;
   /** The measure taken after this run's job ended, the one it started or measured beside: the run's verdict once its fixes are in (`effectiveRun`). */
   after?: AfterMeasure;
   /** Set when the run's job ended cut, so the run did not do its work and reruns (`cutReruns` in src/chat-duty-run.ts). */

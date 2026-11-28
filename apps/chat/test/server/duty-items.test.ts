@@ -70,6 +70,9 @@ test("a job has held its duty since the last run that read a missed number close
   const up = (at: number, value: number): DutyRunRecord => ({ ...run(at, 1), metrics: { up: { value, target: 99, op: ">=", met: value >= 99 } } });
   assert.equal(heldSince([up(T0, 90), up(T0 + HOUR, 95), up(T0 + 2 * HOUR, 93)]), T0 + HOUR, "a number that should rise moved when it rose");
   assert.equal(heldSince([{ ...run(T0, 0), verdict: "met" }, run(T0 + 30 * HOUR, 2)]), T0, "a job that started for no missed metric has no number to move");
+  // Time a job waits for a model account is no time it holds the duty: its limit counts from its first answer and from each run that found it waiting.
+  assert.equal(heldSince([run(T0, 2), run(T0 + 26 * HOUR, 3)], T0 + 25 * HOUR), T0 + 25 * HOUR, "the job got its first model answer after 25 h");
+  assert.equal(heldSince([run(T0, 2), run(T0 + 20 * HOUR, 2, { jobWaits: true }), run(T0 + 26 * HOUR, 3)]), T0 + 20 * HOUR, "a run found it waiting for an account");
 });
 
 test("a due run replaces a job past its stuck limit whose number did not move, and never one that waits for a model account", () => {
@@ -83,6 +86,7 @@ test("a due run replaces a job past its stuck limit whose number did not move, a
   assert.deepEqual(at(26.5, 3, { waitsForAccount: true, fresh: 2 }), { do: "steer" }, "a waiting job still gets the run's new items");
   assert.deepEqual(at(26.5, 1), { do: "leave" }, "the number moved in this run");
   assert.deepEqual(at(26.5, 3, { due: false }), { do: "leave" }, "a run with nothing due has nothing for a new job");
+  assert.deepEqual(at(26.5, 3, { answeredAt: T0 + 20 * HOUR }), { do: "leave" }, "a job that waited 20 h for its first answer has worked 6.5 h");
   const often = (minutes: number) => beside({ now: T0 + minutes * 60_000, schedule: { kind: "every", minutes: 10 }, jobRuns: [first], record: run(T0 + minutes * 60_000, 2), due: true, waitsForAccount: false, fresh: 0 });
   assert.equal(often(80).do, "leave", "a 10-minute duty's job has 90 min, as in Prime");
   assert.equal(often(100).do, "replace");
@@ -183,7 +187,8 @@ test("d17's stored runs: the fourth run replaces the job, and the lines the old 
     const fresh = unseen(items, await givenTo(jobRuns, async () => []));
     const act = jobRuns.length ? beside({ now: record.at, schedule: DAILY, jobRuns, record, due: true, waitsForAccount: entry.waits, fresh: fresh.keys.length }) : { do: "start" as const };
     if (act.do === "start" || act.do === "replace") job += 1;
-    runs.push({ ...record, job: { id: `job-${job}`, name: "Vendor bills duty" }, given: act.do === "start" || act.do === "replace" ? runKeys(items) : act.do === "steer" ? fresh.keys : [] });
+    runs.push({ ...record, job: { id: `job-${job}`, name: "Vendor bills duty" }, given: act.do === "start" || act.do === "replace" ? runKeys(items) : act.do === "steer" ? fresh.keys : [],
+      ...(entry.waits && act.do !== "replace" ? { jobWaits: true as const } : {}) });
     acts.push(act.do === "steer" ? `steer ${fresh.flagged.map(slice => slice.item).join(", ")}` : act.do);
   }
   assert.deepEqual(acts, ["start", "leave", "leave", "replace", "steer openai/sieunpark77@gmail.com/credits", "leave", "steer openai/sieunpark77@gmail.com/credits", "leave"]);
