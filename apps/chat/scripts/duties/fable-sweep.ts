@@ -435,9 +435,9 @@ type DutyMissInput = {
 };
 
 /**
- * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or a duty job
- * that still waits for a model account with the run's brief (`jobWaitsSince`; at 00:51 KST on 11-29 Search product, misc.'s d4 read not
- * passed on 30 min after its miss, while its duty job had waited for an account since 00:21 KST), or for each
+ * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or, for the
+ * metrics no fix step moves, a duty job that still waits for a model account with the run's brief (`dutyJobWaits`; at 00:51 KST on 11-29
+ * Search product, misc.'s d4 read not passed on 30 min after its miss, while its duty job had waited for an account since 00:21 KST), or for each
  * metric the newest run missed an open fix step that names that duty and metric (`duty` is `<dutyId>/<metric>`) whose job works or sleeps
  * or that a board.wake or a working subagent moves (`wokenStep`), or that an open For you todo holds (`boardHold`, as d9 reads it), or that
  * waits for a model account as a stalled step does (`stalledSteps`): at 22:31 KST on 11-28 agent factory d2 read not passed on for
@@ -452,13 +452,22 @@ export function passedOn(input: DutyMissInput): string | undefined {
   const fixes = dutyFixes(input);
   if (typeof fixes === "string") return fixes;
   const { missed, moved } = fixes;
-  return missed.length && missed.every(key => moved.has(key)) ? missed.map(key => moved.get(key)!).join("; ") : undefined;
+  if (missed.length && missed.every(key => moved.has(key))) return missed.map(key => moved.get(key)!).join("; ");
+  const waits = dutyJobWaits(input);
+  return waits ? [...missed.flatMap(key => moved.get(key) ?? []), waits].join("; ") : undefined;
+}
+
+/** The line for a duty whose newest job still waits for a model account (`jobWaitsSince`), which covers the metrics no fix step moves; else undefined. */
+function dutyJobWaits(input: DutyMissInput): string | undefined {
+  const job = input.runs.find(run => run.job)?.job;
+  if (input.jobWaitsSince === undefined || !job) return undefined;
+  return `its job ${job.name} waits for a model account since ${new Date(input.jobWaitsSince + 9 * HOUR).toISOString().slice(5, 16).replace("T", " ")} KST`;
 }
 
 /** The missed metrics of a duty's newest run that no fix step moves (`passedOn`), as the line its item shows; undefined when none. */
 export function unmovedMetrics(input: DutyMissInput): string | undefined {
   const fixes = dutyFixes(input);
-  if (typeof fixes === "string") return undefined;
+  if (typeof fixes === "string" || dutyJobWaits(input)) return undefined;
   const left = fixes.missed.filter(key => !fixes.moved.has(key));
   return left.length ? `not passed on: no fix step a job, board.wake or subagent moves for ${left.join(", ")}` : undefined;
 }
@@ -468,10 +477,6 @@ function dutyFixes(input: DutyMissInput): string | { missed: string[]; moved: Ma
   const measured = input.runs.filter(run => run.verdict !== "skipped");
   if (measured.length === 1 && measured[0]!.job) return `first run of the duty, its job ${measured[0]!.job.name} has it`;
   const newest = measured[0];
-  const dutyJob = input.runs.find(run => run.job)?.job;
-  if (input.jobWaitsSince !== undefined && dutyJob) {
-    return `its job ${dutyJob.name} waits for a model account since ${new Date(input.jobWaitsSince + 9 * HOUR).toISOString().slice(5, 16).replace("T", " ")} KST`;
-  }
   const metrics = newest?.after?.metrics ?? newest?.metrics ?? {};
   const missed = Object.entries(metrics).filter(([, result]) => !result.met).map(([key]) => key);
   if (!missed.length) return { missed, moved: new Map() };

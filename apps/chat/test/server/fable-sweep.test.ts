@@ -369,6 +369,9 @@ test("a duty miss whose own duty job still waits for a model account is passed o
   const since = Date.parse("2026-11-28T15:21:19Z");
   assert.equal(passedOn({ ...miss, jobWaitsSince: since }), `its job ${name} waits for a model account since 11-29 00:21 KST`);
   assert.equal(unmovedMetrics({ ...miss, jobWaitsSince: since }), undefined);
+  const moving: Job = { id: "tm:7", name: "geonode jump", status: "working", thread: "tm", conversation: 7, createdAt: now - 20 * MIN, agent: { id: misc.id, name: misc.name } };
+  const fixed = { ...miss, plan: [{ id: "p9", text: "Find the part that jumped", status: "doing", duty: "d4/jumped_parts", job: moving.name }], jobs: [moving], jobWaitsSince: since };
+  assert.equal(passedOn(fixed), "jumped_parts fix step p9, job geonode jump working", "a fix step that moves says more than the waiting duty job, so it is the line");
 });
 
 /**
