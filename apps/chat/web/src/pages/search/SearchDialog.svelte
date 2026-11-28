@@ -245,8 +245,10 @@
     active = hasQuery ? keys[0] : undefined;
   });
 
-  // The conversations and message hits listed are read ahead, so the one the owner picks opens from the page's cache.
-  $effect(() => listedAhead(rows.flatMap(row => (row.action.type === "open" ? [row.action] : []))));
+  // The conversations and message hits listed are read ahead, so the one the owner picks opens from the page's cache. A closed palette
+  // lists nothing, which drops the reads still queued: the palette stays mounted with its last rows, and on 11-28 at 10:23 UTC his page
+  // read 21 hits' pages, 10 of them in ch_e6bd8de7, 12 s after he had picked one and closed it (work/p324-dup-reads).
+  $effect(() => listedAhead(open ? rows.flatMap(row => (row.action.type === "open" ? [row.action] : [])) : []));
 
   $effect(() => {
     if (!active || !list) return;

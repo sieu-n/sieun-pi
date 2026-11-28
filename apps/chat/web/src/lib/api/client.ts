@@ -49,7 +49,7 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { id: string; m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; page?: PageState; hid?: number; wait?: Wait };
+type Timing = { id: string; m: string; p: string; q?: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; page?: PageState; hid?: number; wait?: Wait };
 
 /**
  * The page's hidden spells as [start, end) in `performance.now()`, the one going on with end Infinity. A call's line names in `hid` the ms
@@ -169,8 +169,11 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
   const now = performance.now();
   const from = wait?.since ?? (wait?.background === "ahead" ? first : asked ?? first);
   const hid = wait?.shownMs === undefined ? Math.round(hiddenWithin(from, now)) : 0;
+  // `q` names the query's parameters without their values, so the pages around 10 Cmd K hits in one room log as reads around a message.
+  const [p, query] = path.split("?");
+  const q = query ? [...new Set(new URLSearchParams(query).keys())].join(",") : "";
   timings.push({
-    id: `${pageName}.${++timingCount}`, m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - from), ...(net === undefined ? {} : { net }), ...(hid > 0 ? { hid } : {}),
+    id: `${pageName}.${++timingCount}`, m, p: p!, ...(q ? { q } : {}), s, ms: Math.round(wait?.shownMs ?? now - from), ...(net === undefined ? {} : { net }), ...(hid > 0 ? { hid } : {}),
     ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(wait?.since === undefined ? {} : { stored: Math.round(now - wait.since) }),
     ...(err ? { err, page: pageState() } : {}), ...(wait ? { wait } : {}),
   });

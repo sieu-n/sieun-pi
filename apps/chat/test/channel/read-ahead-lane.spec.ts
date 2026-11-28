@@ -188,6 +188,68 @@ test("a new Cmd K list drops the queued reads of the rows it no longer shows", a
   expect(around.some((hit) => hits.board!.includes(hit))).toBe(true);
 });
 
+/**
+ * Lists the Cmd K hits for `q` while his held call keeps every read ahead in the lane, and returns the hits as `conversation|message` and
+ * the page reads around a message that went out.
+ */
+async function heldHits(page: Page, q: string): Promise<{ hits: string[]; around: string[]; release: () => void }> {
+  await noSocket(page);
+  await open(page, "#/c/ch_general");
+  await page.waitForLoadState("networkidle");
+  const hits: string[] = [];
+  page.on("response", async (r) => {
+    const url = new URL(r.url());
+    if (url.pathname !== "/api/search" || url.searchParams.get("q") !== q) return;
+    const body = (await r.json().catch(() => null)) as { hits: { conversation: { id: string }; messageId: string }[] } | null;
+    if (body) hits.push(...body.hits.map((hit) => `${hit.conversation.id}|${hit.messageId}`));
+  });
+  const around: string[] = [];
+  page.on("request", (r) => {
+    const url = new URL(r.url());
+    if (url.searchParams.has("around")) around.push(`${decodeURIComponent(url.pathname.split("/")[3]!)}|${url.searchParams.get("around")}`);
+  });
+  const later = await hold(page, HIS);
+  await page.evaluate(async () => {
+    const client = "/src/lib/api/client.ts";
+    const { api } = await import(/* @vite-ignore */ client);
+    void api.later(undefined, true);
+  });
+  await expect.poll(() => later.sent.length).toBeGreaterThan(0);
+  await page.keyboard.press("Control+k");
+  const palette = page.locator("[data-search-palette]");
+  await palette.getByRole("combobox").fill(q);
+  await expect.poll(() => hits.length).toBeGreaterThan(1);
+  await expect(palette.locator('[data-key^="hit:"]').nth(1)).toBeVisible();
+  return { hits, around, release: later.release };
+}
+
+// On 11-28 at 10:23 UTC his page read the pages around 21 Cmd K hits, 10 of them in one channel, 12 s after he picked a hit and the
+// palette closed: his calls held the lane, and the closed palette still listed its rows (work/p324-dup-reads).
+test("a closed Cmd K palette drops the queued reads of its hits", async ({ page }) => {
+  const { around, release } = await heldHits(page, "board");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-search-palette]")).toBeHidden();
+  await page.waitForTimeout(300);
+  expect(around).toEqual([]);
+  release();
+  await page.waitForLoadState("networkidle");
+  await page.waitForTimeout(500);
+  expect(around).toEqual([]);
+});
+
+test("a picked Cmd K hit reads only its own page", async ({ page }) => {
+  const { hits, around, release } = await heldHits(page, "board");
+  const palette = page.locator("[data-search-palette]");
+  const picked = palette.locator('[data-key^="hit:"]').first();
+  await picked.click();
+  await expect(palette).toBeHidden();
+  release();
+  await page.waitForLoadState("networkidle");
+  await page.waitForTimeout(500);
+  expect(around.length).toBeLessThanOrEqual(1);
+  expect(around.every((hit) => hits.includes(hit))).toBe(true);
+});
+
 test("a refresh behind a shown panel goes beside the owner's call on its own connection, and the read ahead waits", async ({ page }) => {
   await lane(page);
   const order: string[] = [];

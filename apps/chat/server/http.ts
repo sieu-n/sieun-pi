@@ -36,7 +36,7 @@ import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-revi
 import { SkillsDb, SkillsRefused, SkillsStepFailed } from "./skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture } from "./skills-db-fixture.ts";
 import type { InstallBody } from "../web/src/lib/api/shared/skills.ts";
-import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
+import { type ClientVia, clientTimings, LoopStalls, queryOf, RequestLog } from "./request-log.ts";
 import { StallProfiler } from "../../../packages/pi-host/src/stall-profile.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { chatDbRoutes } from "./chat-db-routes.ts";
@@ -678,7 +678,7 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
       const phase: Phase = {};
       phases.set(req, phase);
       res.once("close", () => requests.write({
-        at: Date.now(), src: "server", m: method, r: routeLabel(table, method, path), p: path, s: res.writableFinished ? res.statusCode : 0, ms: performance.now() - started,
+        at: Date.now(), src: "server", m: method, r: routeLabel(table, method, path), p: path, ...queryOf(req.url), s: res.writableFinished ? res.statusCode : 0, ms: performance.now() - started,
         ...phase, ...stalls.worst(started), via: viaOf(req), ...uaOf(req),
       }));
     }

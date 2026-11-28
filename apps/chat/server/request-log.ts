@@ -51,6 +51,11 @@ export interface RequestTiming {
    */
   bg?: "ahead" | "shown";
   /**
+   * The names of the call's query parameters, such as `around`, without their values, since a search's `q` holds his words (`queryOf`).
+   * `p` drops the query, so before 11-28 the pages around 10 Cmd K hits in one room read as 10 reads of `/api/c/ch_e6bd8de7/items`.
+   */
+  q?: string;
+  /**
    * On a client line of a failed call, what the page was doing when it failed (web client.ts `pageState`): `visible` when the owner could see
    * it, `hidden` for a hidden tab, and `leaving` once the page began to reload or unload, whose own reload aborts its calls. A line without
    * it is from before 11-22, when 49 of 50 failed calls after a restart were the hidden old page's calls aborted by its own reload.
@@ -147,7 +152,14 @@ export interface StallPart { stall: number; stallCpu?: number; stallGc?: number;
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
 export interface ClientTiming {
-  id?: string; m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; bg?: "ahead" | "shown"; page?: "visible" | "hidden" | "leaving"; hid?: number;
+  id?: string; m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; bg?: "ahead" | "shown"; page?: "visible" | "hidden" | "leaving"; hid?: number; q?: string;
+}
+
+/** A line's `q`: the names of the query parameters of `url`, comma-joined in their first order, or nothing when it has none. */
+export function queryOf(url = ""): { q?: string } {
+  const at = url.indexOf("?");
+  const q = at < 0 ? "" : [...new Set(new URLSearchParams(url.slice(at + 1)).keys())].join(",");
+  return q ? { q } : {};
 }
 
 /**
@@ -220,12 +232,12 @@ export function clientTimings(body: unknown): ClientTiming[] {
   return samples.filter((sample): sample is ClientTiming => {
     const { m, p, s, ms } = (sample ?? {}) as Record<string, unknown>;
     return typeof m === "string" && typeof p === "string" && p.startsWith("/api/") && typeof s === "number" && typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
-  }).map(({ id, m, p, s, ms, net, enc, stored, err, shown, bg, page, hid }) => ({
+  }).map(({ id, m, p, s, ms, net, enc, stored, err, shown, bg, page, hid, q }) => ({
     ...(typeof id === "string" && id && id.length <= 40 ? { id } : {}), m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}),
     ...(typeof enc === "number" && Number.isFinite(enc) && enc >= 0 ? { enc } : {}),
     ...(typeof stored === "number" && Number.isFinite(stored) && stored >= 0 ? { stored } : {}),
     ...(typeof err === "string" && err ? { err: err.slice(0, 500) } : {}), ...(shown === true ? { shown } : {}),
-    ...(bg === "ahead" || bg === "shown" ? { bg } : {}),
+    ...(bg === "ahead" || bg === "shown" ? { bg } : {}), ...(typeof q === "string" && /^[\w.,-]{1,200}$/.test(q) ? { q } : {}),
     ...(page === "visible" || page === "hidden" || page === "leaving" ? { page } : {}),
     ...(typeof hid === "number" && Number.isFinite(hid) && hid > 0 ? { hid: Math.min(hid, ms) } : {}),
   }));
