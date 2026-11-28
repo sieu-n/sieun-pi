@@ -64,6 +64,7 @@ export function parsePoolRows(value: unknown, provider: string): PoolAccount[] {
       ...(typeof row.plan === "string" ? { plan: row.plan } : {}),
       tier: text(row.tier), windows: parseWindows(row.windows), usageAt: epochMs(row.usage_at), cooldownUntil: epochMs(row.cooldown_until),
       cooldownReason: text(row.cooldown_reason), limitedUntil: epochMs(row.limited_until), disabled: row.disabled === true,
+      readFailedAt: epochMs(row.read_failed_at), readError: text(row.read_error), usageRetryAt: epochMs(row.usage_retry_at),
       sessions: typeof row.sessions === "number" && Number.isInteger(row.sessions) && row.sessions > 0 ? row.sessions : 0, ...("resets" in row ? { resets: parseResets(row.resets) } : {}) };
   });
 }

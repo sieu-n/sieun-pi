@@ -446,6 +446,11 @@ export interface PoolAccount {
   tier: string | null; windows: PoolWindow[]; usageAt: number | null; cooldownUntil: number | null; cooldownReason: string | null; disabled: boolean;
   /** Epoch ms until which the provider answered 429 for this account (`pi-pool limited`); null when no limit is on file. */
   limitedUntil: number | null;
+  /** Epoch ms of the last usage read when it failed (a later good read clears it), and what the provider answered it in plain words. */
+  readFailedAt?: number | null;
+  readError?: string | null;
+  /** Epoch ms the usage endpoint's own 429 asked the pool to wait until before the next read; null when none runs. */
+  usageRetryAt?: number | null;
   /** Threads on this account: root sessions (each with its jobs) whose last request through the pool was within `active_session_sec`. */
   sessions: number;
   /** Claude only: the last read of the account's banked usage-limit resets; null when never read. */

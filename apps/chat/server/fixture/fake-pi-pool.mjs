@@ -46,11 +46,11 @@ function seed(now = Date.now() / 1000) {
     account("anthropic", "claude-off", { disabled: true, session_pct: 0, weekly_pct: 0 }),
     account("anthropic", "claude-reauth", { reason: "needs-reauth", resets: { error: "the account needs a new sign-in", error_at: now - HOUR } }),
     account("anthropic", "claude-terms", { reason: "cooldown 23h", cooldown_reason: "needs terms", cooldown_until: now + 23 * HOUR }),
-    account("anthropic", "claude-refused", { reason: "cooldown 20h", cooldown_reason: "oauth not allowed for organization", cooldown_until: now + 20 * HOUR }),
+    account("anthropic", "claude-refused", { reason: "cooldown 20h", cooldown_reason: "oauth not allowed for organization", cooldown_until: now + 20 * HOUR, answer: { code: 403 } }),
     account("anthropic", "claude-cooldown", { reason: "cooldown 15m", cooldown_until: now + 15 * MIN }),
     account("anthropic", "claude-limited", { reason: "limited 2h", limited_until: now + 2 * HOUR, session_pct: 71, weekly_pct: 74, sessions: 2 }),
     account("anthropic", "claude-depleted", { reason: "depleted", session_pct: 100, weekly_pct: 99, model_pct: 92, sessions: 1 }),
-    account("anthropic", "claude-stale", { session_pct: 8, weekly_pct: 40, usage_at: now - 4 * DAY }),
+    account("anthropic", "claude-stale", { session_pct: 8, weekly_pct: 40, usage_at: now - 4 * DAY, answer: { code: 429, retryIn: 8 * MIN } }),
     account("anthropic", "claude-resets", {
       reason: "depleted", session_pct: 100, weekly_pct: 100,
       resets: { checked_at: now - 30 * MIN, status: { eligible: true, ineligible_reason: null, at_limit: true, grants: [grant("grant-a", 2)], next_grant_id: "grant-a", cooldown_until: null } },
@@ -181,6 +181,8 @@ function ls(state, f) {
       current: picked.account?.id === account.id, pinned: poolPin === account.id, disabled: account.disabled, score: reason === null ? 100 - account.session_pct : null,
       slot_cap: 1, tier: account.tier, windows: windows(account), usage_at: account.usage_at, sessions: account.sessions, cooldown_until: account.cooldown_until,
       cooldown_reason: account.cooldown_reason, limited_until: account.limited_until, ...(account.resets ? { resets: account.resets } : {}),
+      read_failed_at: account.read_failed_at ?? null, read_error: account.read_error ?? null,
+      usage_retry_at: account.usage_retry_at > Date.now() / 1000 ? account.usage_retry_at : null,
     };
   });
   return {
@@ -330,7 +332,18 @@ async function refresh(f) {
       say({ event: "read", id, ok: false, reason: "the account needs a new sign-in", usage_at: account?.usage_at ?? null, retry_at: null });
       continue;
     }
+    if (account.answer) {
+      // What pi-pool's usage.read_account writes for the provider's refusal, in its words.
+      const now = Date.now() / 1000;
+      const reason = account.answer.code === 429 ? "Anthropic rate limited usage reads (429)"
+        : `Anthropic answered ${account.answer.code}: OAuth authentication is currently not allowed for this organization.`;
+      Object.assign(account, { read_failed_at: now, read_error: reason, usage_retry_at: account.answer.retryIn ? now + account.answer.retryIn : null });
+      save(state);
+      say({ event: "read", id, ok: false, reason, usage_at: account.usage_at, retry_at: account.usage_retry_at });
+      continue;
+    }
     account.usage_at = Date.now() / 1000;
+    Object.assign(account, { read_failed_at: null, read_error: null, usage_retry_at: null });
     save(state);
     say({ event: "read", id, ok: true, reason: null, usage_at: account.usage_at, retry_at: null });
   }

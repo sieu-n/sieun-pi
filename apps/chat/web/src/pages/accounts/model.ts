@@ -129,6 +129,35 @@ export function staleText(row: PoolAccount, now = Date.now()): string | null {
   return now - row.usageAt > 20 * 60_000 ? `Usage from ${span(now - row.usageAt)} ago` : null;
 }
 
+/** The account's last usage read when it failed after its last good one: when, what the provider answered, and the retry time it set. */
+export function failedRead(row: PoolAccount): { at: number; reason: string; retryAt: number | null } | null {
+  if (!row.readFailedAt || !row.readError || (row.usageAt && row.usageAt >= row.readFailedAt)) return null;
+  return { at: row.readFailedAt, reason: row.readError, retryAt: row.usageRetryAt ?? null };
+}
+
+const sentence = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1).replace(/\.$/, "");
+
+/** The note that leads a row whose last read failed, "Usage read at 19:17 failed. Signed out: Anthropic refused the token (401)." */
+export function failedReadNote(row: PoolAccount, now = Date.now()): string | null {
+  const failed = failedRead(row);
+  if (!failed) return null;
+  const until = failed.retryAt && failed.retryAt > now ? ` until ${clockText(failed.retryAt, now)}` : "";
+  return `Usage read at ${clockText(failed.at, now)} failed. ${sentence(failed.reason)}${until}.`;
+}
+
+/** The short status-cell tag for a row whose last read failed: "Signed out 19:17", "Rate limited until 19:25", "Refused 403 19:17". */
+export function failedReadTag(row: PoolAccount, now = Date.now()): { label: string; tone: Tone } | null {
+  const failed = failedRead(row);
+  if (!failed) return null;
+  const at = clockText(failed.at, now);
+  if (/^signed out/i.test(failed.reason)) return { label: `Signed out ${at}`, tone: "danger" };
+  if (/rate limited/i.test(failed.reason))
+    return { label: failed.retryAt && failed.retryAt > now ? `Rate limited until ${clockText(failed.retryAt, now)}` : `Rate limited ${at}`, tone: "warning" };
+  const code = /answered (\d{3})/.exec(failed.reason)?.[1];
+  if (code) return { label: `${code.startsWith("4") ? "Refused" : "Error"} ${code} ${at}`, tone: code.startsWith("4") ? "danger" : "warning" };
+  return { label: `Not read ${at}`, tone: "warning" };
+}
+
 export const meterTone = (pct: number): "low" | "mid" | "high" => (pct >= 90 ? "high" : pct >= 70 ? "mid" : "low");
 
 /** A per-model window (Fable) only for the model the thread runs; `model` is its id and name. */
@@ -182,6 +211,10 @@ export function usableGrant(resets: AccountResets | null | undefined, now = Date
 export const pendingReset = (resets: AccountResets | null | undefined, now = Date.now()) =>
   resets?.pending && now - resets.pending.createdAt < RESET_RETRY_MS ? resets.pending : null;
 
+/** "Reset check at 19:17 failed. Anthropic rate limited the reset check (429)." */
+const resetFailure = (resets: AccountResets, now: number): string =>
+  `Reset check${resets.errorAt ? ` at ${clockText(resets.errorAt, now)}` : ""} failed. ${sentence(resets.error ?? "unknown error")}.`;
+
 /** One note about a Claude account's banked resets, or null when they were never read. */
 export function resetNote(resets: AccountResets | null | undefined, now = Date.now()): string | null {
   if (!resets) return null;
@@ -191,22 +224,25 @@ export function resetNote(resets: AccountResets | null | undefined, now = Date.n
       ? `A reset claim got no answer, so a reset may be spent. Use reset within ${span(resets.pending.createdAt + RESET_RETRY_MS - now)} to retry the same claim.`
       : "A reset claim got no answer. Use reset again to check the count; it sends nothing new if the reset was spent.";
   }
-  const failed = resets.error ? ` Last check failed: ${resets.error.replace(/\.$/, "")}.` : "";
-  if (resets.eligible === null) return `Resets not read: ${resets.error ?? "unknown error"}.`;
-  if (!resets.eligible) return `No banked resets: ${INELIGIBLE[resets.ineligibleReason ?? ""] ?? resets.ineligibleReason ?? "not eligible"}.` + checked + failed;
+  if (resets.eligible === null) return resets.error ? `Resets not read. ${resetFailure(resets, now)}` : "Resets not read.";
+  // A failed check leads with what Anthropic answered and when; the grants it kept come from the last good check.
+  const known = (text: string): string => resets.error ? `${resetFailure(resets, now)} The last good check said: ${text.charAt(0).toLowerCase()}${text.slice(1)}` : text + checked;
+  if (!resets.eligible) return known(`No banked resets: ${INELIGIBLE[resets.ineligibleReason ?? ""] ?? resets.ineligibleReason ?? "not eligible"}.`);
   const left = resets.grants.reduce((sum, grant) => sum + grant.resetsLeft, 0);
-  if (!left) return "No banked resets left." + checked + failed;
+  if (!left) return known("No banked resets left.");
   const grant = usableGrant(resets, now) ?? resets.grants.find(entry => entry.resetsLeft > 0)!;
   const ends = grant.endsAt ? ` Expires ${day(grant.endsAt)}.` : "";
-  return `${left} banked reset${left === 1 ? "" : "s"} left${grant.label ? `: ${grant.label}` : ""}.${ends}` + (usableGrant(resets, now) ? "" : " Not usable right now.") + checked + failed;
+  return known(`${left} banked reset${left === 1 ? "" : "s"} left${grant.label ? `: ${grant.label}` : ""}.${ends}` + (usableGrant(resets, now) ? "" : " Not usable right now."));
 }
 
 /** The plain-words notes under a row. `unread` is the reason a usage read of this row just failed, if one did. */
 export function rowNotes(row: PoolAccount, now = Date.now(), unread: string | null = null): string[] {
   const state = accountState(row);
-  const notRead = unread ? [`Not read: ${unread.replace(/\.$/, "")}.`] : [];
-  if (state === "off") return ["Off excludes this account from Auto. Manual can still use it.", ...notRead];
-  const out: string[] = [];
+  // The last read's failure leads, with the provider's answer and its time; the run's own reason repeats it once the pool wrote it.
+  const failed = failedReadNote(row, now);
+  const notRead = failed ? [failed] : unread ? [`Not read: ${unread.replace(/\.$/, "")}.`] : [];
+  if (state === "off") return [...notRead, "Off excludes this account from Auto. Manual can still use it."];
+  const out: string[] = failed ? [failed] : [];
   if (state === "needs-login") out.push("The sign-in expired.");
   else if (state === "needs-terms")
     out.push(`Anthropic refuses every request until the updated Consumer Terms are accepted. Open claude.ai signed in as ${row.label}, accept them, then choose Check again.`);
@@ -215,7 +251,7 @@ export function rowNotes(row: PoolAccount, now = Date.now(), unread: string | nu
     out.push((row.cooldownReason ? `Refused: ${row.cooldownReason}.` : "Cooling down after a failure.") + left);
   } else if (state === "limited" && row.limitedUntil && row.limitedUntil > now)
     out.push(`The provider answered 429. Auto skips it for ${span(row.limitedUntil - now)}. Manual stays on it and reports the limit.`);
-  out.push(...notRead);
+  if (!failed) out.push(...notRead);
   const stale = staleText(row, now);
   if (stale && state !== "needs-login") out.push(stale + ".");
   const resets = state === "needs-login" ? null : resetNote(row.resets, now);

@@ -528,6 +528,39 @@ test("36 choosing an account in the chip's picker keeps it for the thread, and A
   await expect(chip).toContainText("Auto");
 });
 
+test("19b a row whose refresh Anthropic refuses leads with that answer and its time, ahead of the old usage age", async ({ page, request }) => {
+  const rows = providerOf(await readView(request), "anthropic").rows;
+  const stale = rows.find(row => row.id === "claude-stale")!;
+  const refused = rows.find(row => row.id === "claude-refused")!;
+  expect(stale && refused, "the fake seeds claude-stale (answers 429) and claude-refused (answers 403)").toBeTruthy();
+  await openAccounts(page);
+  await showProvider(page, "anthropic");
+  const clock = /\d{2}:\d{2}/.source;
+  const refresh = async (row: PoolAccount) => {
+    const line = accountRow(page, row);
+    await line.hover();
+    await page.getByRole("button", { name: `Refresh usage for ${row.label}` }).click();
+    await expect(line.getByText("Not read", { exact: true })).toBeVisible({ timeout: 15_000 });
+    return line;
+  };
+  const staleLine = accountRow(page, stale);
+  await expect(staleLine.getByTestId("account-status")).toContainText(/Usage 4d( \d+h)? old/);
+  await expect(staleLine.getByTestId("account-read-failed")).toHaveCount(0);
+
+  await refresh(stale);
+  await expect(staleLine.getByTestId("account-read-failed")).toHaveText(new RegExp(`^Rate limited until ${clock}$`));
+  await expect(staleLine.getByTestId("account-status")).not.toContainText("old");
+  await staleLine.getByTestId("account-status").hover();
+  const tip = page.getByRole("tooltip");
+  await expect(tip).toContainText(new RegExp(`^Usage read at ${clock} failed\\. Anthropic rate limited usage reads \\(429\\) until ${clock}\\. .*Usage from 4d`));
+
+  await expect(page.getByRole("button", { name: "Refresh all" })).toBeEnabled({ timeout: 15_000 });
+  const refusedLine = await refresh(refused);
+  await expect(refusedLine.getByTestId("account-read-failed")).toHaveText(new RegExp(`^Refused 403 ${clock}$`));
+  await refusedLine.getByTestId("account-status").hover();
+  await expect(tip).toContainText(new RegExp(`^Usage read at ${clock} failed\\. Anthropic answered 403: OAuth authentication is currently not allowed for this organization\\.`));
+});
+
 test("38 a new agent can start on a chosen account", async () => {
   test.skip(true, "Out of scope for sw factory: pi-pool refuses a pick on a tree with no pool record, so a new agent cannot start on a chosen account.");
 });

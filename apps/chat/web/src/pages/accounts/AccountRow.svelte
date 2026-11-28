@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PoolAccount, PoolConfig, PoolProvider, UsageRefreshAccount } from "$lib/api/shared/types.ts";
   import { Button, IconButton, Meter, Spinner, tooltip } from "$lib/ui";
-  import { accountState, isManualAccount, pendingReset, planText, resetText, rowNotes, shownName, span, STATE_LABEL, staleText, threadsText, usableGrant, windowLabel } from "./model";
+  import { accountState, failedReadTag, isManualAccount, pendingReset, planText, resetText, rowNotes, shownName, span, STATE_LABEL, staleText, threadsText, usableGrant, windowLabel } from "./model";
 
   /**
    * One account on one line: label, plan, threads, a meter per usage window, a status cell and the row actions.
@@ -52,8 +52,10 @@
   const pending = $derived(pendingReset(row.resets, now));
   const grant = $derived(usableGrant(row.resets, now));
   const notes = $derived(rowNotes(row, now, read?.state === "failed" ? read.reason : null));
-  /** The status cell's tooltip: what the in-use mark means, then the row's notes. */
-  const hint = $derived([inUse ? roleHint : null, ...notes].filter(Boolean).join(" "));
+  /** The last usage read's failure, which leads the status cell and its tooltip ahead of the older numbers. */
+  const failed = $derived(failedReadTag(row, now));
+  /** The status cell's tooltip: a failed read first, then what the in-use mark means, then the other notes. */
+  const hint = $derived((failed ? [notes[0], inUse ? roleHint : null, ...notes.slice(1)] : [inUse ? roleHint : null, ...notes]).filter(Boolean).join(" "));
   /** How old the usage numbers are, once pi-pool calls them stale (20 min), for a row with nothing worse to say. */
   const stale = $derived(status || !staleText(row, now) ? null : row.usageAt ? `Usage ${span(now - row.usageAt)} old` : "Usage never read");
   const pickable = $derived(thread !== null && !manual && !locked);
@@ -85,11 +87,12 @@
     </div>
   {/each}
   <div class="status" role="cell" data-testid="account-status" use:tooltip={hint ? { text: hint, placement: "bottom" } : null}>
+    {#if failed}<span class="tag {failed.tone}" data-testid="account-read-failed">{failed.label}</span>{/if}
     {#if inUse}<span class="tag accent">{role}</span>{/if}
     {#if status}<span class="tag {STATE_LABEL[status].tone}">{STATE_LABEL[status].label}</span>{/if}
     {#if pending}<span class="tag warning">Reset unknown</span>
     {:else if grant}<span class="tag success">{grant.resetsLeft} reset{grant.resetsLeft === 1 ? "" : "s"}</span>{/if}
-    {#if stale && !inUse && !pending && !grant}<span class="quiet">{stale}</span>{/if}
+    {#if stale && !failed && !inUse && !pending && !grant}<span class="quiet">{stale}</span>{/if}
   </div>
   <div class="actions" role="cell">
     {#if read?.state === "queued"}<span class="read-state">Queued</span>
