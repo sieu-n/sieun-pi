@@ -94,3 +94,29 @@ test("a test room's open reads its header once", async ({ page, request }) => {
   expect(headers).toHaveLength(1);
   await request.patch(`/api/c/${made.id}`, { data: { archived: true } });
 });
+
+test("a test room loaded first reads its header once, also after the sidebar comes with the socket's hello", async ({ page, request }) => {
+  const made = (await (await request.post("/api/rooms", { data: { name: `hello-reads-${Math.random().toString(36).slice(2, 8)}`, kind: "channel", test: true } })).json()) as { id: string };
+  const headers = gets(page, [`/api/c/${made.id}`]);
+  // The hello, which brings the sidebar, comes after the timeline read the header, as at a 200 ms round trip on 11-28 (live/r5).
+  let release = () => {};
+  await page.routeWebSocket(/\/api\/live/, (ws) => {
+    const server = ws.connectToServer();
+    let waiting: (string | Buffer)[] | null = [];
+    release = () => {
+      for (const message of waiting ?? []) ws.send(message);
+      waiting = null;
+    };
+    ws.onMessage((message) => server.send(message));
+    server.onMessage((message) => (waiting ? waiting.push(message) : ws.send(message)));
+  });
+  const read = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/c/${made.id}`);
+  await page.goto(`/#/c/${made.id}`);
+  await read;
+  await page.waitForTimeout(300);
+  release();
+  await expect(page.getByTestId("conversation-title")).toBeVisible();
+  await page.waitForTimeout(1500);
+  expect(headers).toHaveLength(1);
+  await request.patch(`/api/c/${made.id}`, { data: { archived: true } });
+});

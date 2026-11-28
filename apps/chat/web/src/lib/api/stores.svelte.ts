@@ -742,6 +742,11 @@ function readHeader(id: ConversationId, wait?: Wait): Promise<ConversationHeader
 }
 /** The page's read of `id`'s header on its way, if one is. */
 export const headerInFlight = (id: ConversationId): Promise<ConversationHeader> | undefined => headerFlights.get(id);
+/**
+ * The header of `id`'s timeline the page holds, if it holds one. On 11-28 each load of a walk's test room read its header again over HTTP
+ * when the sidebar came with the socket's hello, 1.7 s after the timeline read it (work/p324-dup-reads/live/r5).
+ */
+export const heldHeader = (id: ConversationId): ConversationHeader | undefined => timelinePages.last(id)?.header;
 const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, limit?: number): Promise<TimelineRead> => {
   const [page, header] = await Promise.all([api.items(id, around ? { around } : limit ? { limit } : {}, wait), readHeader(id, wait)]);
   return { page, header };
