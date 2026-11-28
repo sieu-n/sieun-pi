@@ -56,6 +56,7 @@ import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, threadTimes, timed, t
 import { boardDelta, boardKey, boardStep, parseBoardsParam } from "../web/src/lib/api/shared/board-delta.ts";
 import type { ChatBoard } from "../web/src/lib/api/shared/types.ts";
 import { OwnerSettingsStore } from "./owner-settings.ts";
+import { ownerPatch } from "./owner-patch.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
@@ -1384,9 +1385,10 @@ export class App {
 
   /**
    * On a DM, a rename or archive changes the agent and its work thread, cwd changes the work thread, and model and thinking level change the
-   * work thread and every comm thread, since a comm thread took the work thread's model only when it was made (`threadModel`).
+   * work thread and every comm thread, since a comm thread took the work thread's model only when it was made (`threadModel`). `owner` says
+   * the owner's own page sent the change, which an agent's record keeps for its model (`Agents.modelSet`).
    */
-  async patch(id: ConversationId, patch: ConversationPatch): Promise<ConversationHeader> {
+  async patch(id: ConversationId, patch: ConversationPatch, owner = false): Promise<ConversationHeader> {
     if (this.isGroup(id)) {
       this.groups.update(id, { ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.archived !== undefined ? { archived: patch.archived } : {}) });
       return this.header(id);
@@ -1406,11 +1408,36 @@ export class App {
     if (!Object.keys(set).length) void this.threads.poll();
     else if (!(patch.cwd === undefined && known && this.threads.change(thread, set))) this.threads.put(await this.host.set(thread, set));
     const model = { ...(set.model !== undefined ? { model: set.model } : {}), ...(set.thinkingLevel !== undefined ? { thinkingLevel: set.thinkingLevel } : {}) };
+    const record = conversation === 1 && Object.keys(model).length ? this.agents.ofWorkThread(thread) : undefined;
+    if (record) this.agents.modelSet(record, { owner, model: this.modelOf(thread), newModel: set.model !== undefined, at: Date.now() });
     if (isRoomId(id) && Object.keys(model).length) {
       const comms = Object.values(this.roomAgent(id).comm ?? {});
       await Promise.all(comms.map(async comm => { if (!(known && this.threads.change(comm, model))) this.threads.put(await this.host.set(comm, model)); }));
     }
     return this.header(id);
+  }
+
+  /** The model a thread runs, as `provider/id`. */
+  private modelOf(thread: string): string | undefined {
+    const row = this.threads.thread(thread);
+    return row && `${row.provider}/${row.modelId}`;
+  }
+
+  /**
+   * Records the owner as the setter of an agent's current model from his PATCH at `at`, which the request log holds, for a change he made
+   * before the server kept the setter. Refused unless the log has his PATCH and no caller on the box sent a later one (hard: auth, since
+   * this record tells the sweep whose choice a Fable work thread is).
+   */
+  async adoptOwnerModel(id: string, at: number): Promise<AgentSummary> {
+    const record = this.agents.record(id);
+    if (!record) throw new NotFound(`No agent ${id}`);
+    const model = this.modelOf(record.workThread);
+    if (!model) throw new Error(`No model is known for ${record.id}, since its work thread is not listed.`);
+    const found = await ownerPatch(join(this.config.dataDir, "requests"), [record.room, record.workThread].map(one => `/api/c/${one}`), at);
+    if (!found.owner) throw new Error(`No PATCH of ${record.room} or its work thread by the owner at ${at} is in the request log.`);
+    if (found.later !== undefined) throw new Error(`A caller on this box sent a PATCH of ${record.id} at ${found.later}, after the owner's, so the model may be that caller's.`);
+    this.agents.modelSet(record, { owner: true, model, newModel: false, at });
+    return this.threads.agent(record.id)!;
   }
 
   /** A feed row from a box's relay: the room whose thread spoke reads its feed, and the relay client acks the row after it. */
@@ -1459,7 +1486,7 @@ export class App {
    * for, becomes its brief.md: until 11-21 creation wrote none, so the knowledge manager agent (11-20) sat with an empty board and a
    * responsibility only its name held, and its check-ins said "nothing changed" for a day.
    */
-  async createAgent(input: { name?: string; brief?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string; test?: boolean; host?: string }): Promise<AgentSummary> {
+  async createAgent(input: { name?: string; brief?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string; test?: boolean; host?: string }, owner = false): Promise<AgentSummary> {
     const box = input.host ?? this.config.box;
     let cwd: string;
     let agentsDir: string | undefined;
@@ -1489,6 +1516,8 @@ export class App {
     // `refWritten`). On 11-23 that wait was two pi-host round trips of the create, and a thread list read that answered meanwhile held the
     // event loop before the answer went out.
     if (!record) return this.threads.agent(created.id)!;
+    // The model of an agent the owner made in his Create agent dialog is his choice, as a later change from his page is (`patch`).
+    if (owner) this.agents.modelSet(record, { owner, model: this.modelOf(created.id), newModel: true, at: Date.now() });
     if (input.brief?.trim()) await this.folders.writeBrief(record, input.brief.trim());
     await this.commonDuties(record.id, cwd, input.test === true);
     this.roomsChanged(record);

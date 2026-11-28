@@ -305,6 +305,11 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
       return app.threads.jobList({ archived: q.get("archived") === "1", ...(agent ? { agent } : {}) });
     }),
     route("GET", "/api/agents/:id/config", async (_r, p, q) => agentConfig(app, p.id!, q.get("wait") === "1")),
+    route("POST", "/api/agents/:id/model-set", async (_r, p, _q, body) => {
+      const { at } = ((await body()) ?? {}) as { at?: unknown };
+      if (typeof at !== "number" || !Number.isFinite(at)) throw new BadRequest("at is the ms time of the owner's PATCH line in the request log.");
+      return app.adoptOwnerModel(p.id!, at);
+    }),
     route("GET", "/api/agents/:id/prompt", async (_r, p) => agentPromptAnswer(app, p.id!)),
     route("GET", "/api/agents/:id/prompt/outline", async (_r, p, q) => agentPromptOutlineAnswer(app, p.id!, q.get("wait") === "1")),
     route("GET", "/api/agents/:id/for-me", async (_r, p, q) => {
@@ -360,16 +365,16 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
       return app.folders.read(agent);
     }),
     route("GET", "/api/agent-hosts", async () => app.agentHosts()),
-    route("POST", "/api/agents", async (_r, _p, _q, body) => {
+    route("POST", "/api/agents", async (req, _p, _q, body) => {
       const input = (await body()) as Parameters<App["createAgent"]>[0];
       if (input.brief !== undefined && typeof input.brief !== "string") throw new BadRequest("A new agent's brief is text, a string, when given.");
-      const agent = await app.createAgent(input);
+      const agent = await app.createAgent(input, viaOf(req) === "tailnet");
       // A job thread opens by link later, so only a new agent's DM comes with its first page.
       return input.kind === "job" || input.parent || !agent.room ? agent : { ...agent, opened: await app.opened(agent.room) };
     }),
     route("GET", "/api/projects", async () => app.projects()),
     route("GET", "/api/c/:id", async (_r, p) => app.header(p.id!)),
-    route("PATCH", "/api/c/:id", async (_r, p, _q, body) => app.patch(p.id!, (await body()) as ConversationPatch)),
+    route("PATCH", "/api/c/:id", async (req, p, _q, body) => app.patch(p.id!, (await body()) as ConversationPatch, viaOf(req) === "tailnet")),
     route("GET", "/api/c/:id/items", async (r, p, q) => {
       const opts = { before: str(q.get("before")), after: str(q.get("after")), around: str(q.get("around")), limit: num(q.get("limit")) };
       return app.items(p.id!, opts, splitOf(r));

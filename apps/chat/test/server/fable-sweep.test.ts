@@ -11,8 +11,10 @@
  *    more jobs that wait for a model account as one item.
  * 7. A duty miss its owner has already, a fix step with a working or sleeping job or a board.wake, or the duty's first run, is passed on and
  *    never fresh, and a verify run (a closed fix step) confirms the last sweep's items and starts no new sweep (11-24, 15:32 KST).
+ * 8. A Fable work thread is an item unless it is the advisor's own or the owner set that model himself from his page (11-28, 19:19 KST).
  */
 import { strict as assert } from "node:assert";
+import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -20,6 +22,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { after, test } from "node:test";
 import { measure } from "../../server/duty-run.ts";
 import {
@@ -403,6 +406,38 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
       ["duty:ag_crawler-guy/d2", false, "first run of the duty, its job GeoNode proxy use duty has it"],
       ["duty:ag_seo/d1", true, undefined],
     ]);
+  } finally {
+    server.close();
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The 11-28 case through the real precheck in peek mode: the sweep flagged agent factory for the Fable 5.2 the owner had set from his page at
+ * 19:19 KST. The server says who set an agent's current model (`AgentSummary.modelSet`), and only a Fable agent with no owner record is an item.
+ */
+test("a Fable work thread the owner set himself is no item, and one an agent or a job set still is (agent factory, 11-28 19:19 KST)", async () => {
+  const fable = { provider: "anthropic", id: "claude-fable-5-2", label: "Fable 5.2" };
+  const one = (slug: string, extra: Record<string, unknown> = {}) => ({ id: `ag_${slug}`, name: slug, status: "idle", thread: `t-${slug}`, room: `dm_${slug}`, model: fable, ...extra });
+  const routes: Record<string, unknown> = {
+    "/api/agents": [
+      one("fable-auditor"), one("agent-factory", { modelSet: { by: "owner", at: Date.parse("2026-11-28T10:19:17Z") } }), one("vent"),
+      one("seo", { model: { provider: "anthropic", id: "claude-opus-5-5", label: "Opus 5.5" } }),
+    ],
+    "/api/jobs": [], "/api/search/recent": { hits: [] },
+  };
+  const server = createServer((req, res) => {
+    const body = routes[new URL(req.url ?? "/", "http://x").pathname];
+    res.writeHead(body === undefined ? 404 : 200, { "content-type": "application/json" }).end(JSON.stringify(body ?? {}));
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const work = mkdtempSync(join(tmpdir(), "fable-sweep-model-"));
+  try {
+    const out = join(work, "peek.json");
+    await promisify(execFile)("node", ["--import", "tsx", "scripts/duties/fable-sweep.ts", "--agent", "ag_fable-auditor", "--server", `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      "--threads-dir", join(work, "threads"), "--data-dir", join(work, "data")], { cwd: join(dirname(fileURLToPath(import.meta.url)), "../.."), env: { ...process.env, PRECHECK_MODE: "peek", OUTPUT_FILE: out } });
+    const { items } = JSON.parse(readFileSync(out, "utf8")) as { items: Item[] };
+    assert.deepEqual(items.filter(item => item.kind === "model_off").map(item => [item.sig, item.agent]), [["model:ag_vent/claude-fable-5-2", "vent"]]);
   } finally {
     server.close();
     rmSync(work, { recursive: true, force: true });

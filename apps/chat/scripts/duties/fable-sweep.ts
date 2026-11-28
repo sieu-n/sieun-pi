@@ -24,7 +24,7 @@
  *     no open owner todo that holds it. A step whose job wrote in the last 45 min still moves, since its parent often closes the step right
  *     after the job reports (the 45 min of rule 6).
  *   model_off: an agent other than this one whose work thread runs on Fable, which the owner keeps for this advisor (msg mwqwsgx9: "main
- *     worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까").
+ *     worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까"), except an agent whose model he set himself from his page (`modelFindings`).
  *
  * Each item carries the context a reviewer would look up to judge it, in the detail file under its line: a duty's last three runs and its fix
  * step, a step's note, a stuck job's pi-host task state. The first Fable sweep on 11-22 spent 40 turns
@@ -111,7 +111,12 @@ export interface Post {
   reactions?: { emoji: string; by: Author[] }[]; done?: { at: number }; thread?: { authors?: Author[]; lastAt?: number } | null;
 }
 export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string }; retrying?: string }
-interface Agent { id: string; name: string; status: string; thread: string; room?: string; archived?: boolean; test?: boolean; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
+export interface Agent {
+  id: string; name: string; status: string; thread: string; room?: string; archived?: boolean; test?: boolean; model?: { id: string; label?: string } | null;
+  /** Set while the agent runs the model the owner chose for it from his own page (the server's `AgentSummary.modelSet`). */
+  modelSet?: { by: string; at: number };
+  comm?: { room: string; thread: string; status: string }[];
+}
 export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
 export interface DutyRunView {
   at: number; verdict: string; summary?: string; error?: string; metrics?: Record<string, { met: boolean }>; hostAway?: string; waitsOn?: string;
@@ -291,6 +296,18 @@ export async function parkedJobs(jobs: readonly Job[], now: number, read: typeof
   } catch {
     return new Set();
   }
+}
+
+/**
+ * The agents other than `self`, the advisor, whose work thread runs on Fable. An agent whose model the owner set himself is his choice and
+ * no item: on 11-28 the sweep flagged agent factory for the Fable 5.2 he had set from his page at 19:19 KST. A Fable model an agent, a job
+ * or a script set is still listed.
+ */
+export function modelFindings(agents: readonly Agent[], self: string | undefined): Item[] {
+  return agents.filter(agent => agent.id !== self && /fable/i.test(agent.model?.id ?? "") && agent.modelSet?.by !== "owner").map(agent => ({
+    kind: "model_off", sig: `model:${agent.id}/${agent.model!.id}`, agent: agent.name,
+    text: `${agent.name}'s work thread runs ${agent.model!.label ?? agent.model!.id}, so its comm threads and duty jobs do too`, link: `#/agents/${agent.id}`,
+  }));
 }
 
 /**
@@ -512,10 +529,7 @@ if (isMain(import.meta.url)) {
   const parked = await parkedJobs(quiet, now);
   const poolWaits = quiet.filter(job => parked.has(job.id) || taskOf(job)?.includes("account slot")).length;
   items.push(...jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now, taskOf, parked));
-  for (const agent of agents) {
-    if (agent.id === values.agent || !/fable/i.test(agent.model?.id ?? "")) continue;
-    items.push({ kind: "model_off", sig: `model:${agent.id}/${agent.model!.id}`, agent: agent.name, text: `${agent.name}'s work thread runs ${agent.model!.label ?? agent.model!.id}, so its comm threads and duty jobs do too`, link: `#/agents/${agent.id}` });
-  }
+  items.push(...modelFindings(agents, values.agent));
   for (const agent of agents) {
     if (agent.status === "failed") items.push({ kind: "job_failed", sig: `failed:${agent.thread}`, agent: agent.name, text: `${agent.name}'s work thread failed`, link: `#/c/${agent.thread}` });
     for (const comm of agent.comm ?? []) {

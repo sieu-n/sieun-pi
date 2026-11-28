@@ -93,6 +93,8 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
   const name = row?.name || record.name;
   return {
     id: record.id, kind: "chat", name, avatar: avatar(name), model: extra.model, thinkingLevel: (row?.thinkingLevel as ThinkingLevel | undefined) ?? null,
+    // His record holds only for the model he set: a model pi-host took any other way, such as a job's own call to it, reads as nobody's.
+    ...(record.modelSet && extra.model && record.modelSet.model === `${extra.model.provider}/${extra.model.id}` ? { modelSet: { by: record.modelSet.by, at: record.modelSet.at } } : {}),
     status: agentStatus(rows), parent: null, thread: record.workThread, conversation: 1, archived: row?.archived ?? record.archived,
     createdAt: record.createdAt, updatedAt: Math.max(row?.updatedAt ?? record.createdAt, ...rows.jobs.map(j => j.updatedAt)),
     preview: row?.preview.split("\n").find(line => line.trim()) ?? "", rooms: extra.rooms, host: record.host, room: record.room, home: record.home,
@@ -231,6 +233,17 @@ export class Agents {
   /** The record whose main work thread is `thread`. */
   ofWorkThread(thread: string): AgentRecord | undefined {
     return this.store.agentByWorkThread(thread);
+  }
+
+  /**
+   * Keeps who set the work thread's model after a change of its model or thinking level: the owner's own change records him on `model`, the
+   * model the thread runs after it, and a new model from any other caller drops his record.
+   */
+  modelSet(record: AgentRecord, change: { owner: boolean; model: string | undefined; newModel: boolean; at: number }): void {
+    if (change.owner && change.model) record.modelSet = { by: "owner", at: change.at, model: change.model };
+    else if (!change.owner && change.newModel && record.modelSet) delete record.modelSet;
+    else return;
+    this.store.saveAgents();
   }
 
   /**

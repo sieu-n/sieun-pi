@@ -64,6 +64,8 @@ export interface AgentSummary {
   name: string;
   avatar: Principal["avatar"];
   model: ModelRef | null;
+  /** An agent whose current `model` the owner set himself from his page, and when; absent for a model an agent, a job or a script set. */
+  modelSet?: { by: "owner"; at: Ms };
   thinkingLevel: ThinkingLevel | null;
   status: RunStatus;
   parent: { id: AgentId; name: string } | null;

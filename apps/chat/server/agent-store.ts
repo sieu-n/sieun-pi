@@ -38,6 +38,11 @@ export interface AgentRecord {
   comm?: Record<RoomId, string>;
   /** A walk's throwaway agent (`POST /api/agents {test: true}`): no owner list, live event or badge shows it, and its DM room is a test room too. */
   test?: true;
+  /**
+   * The owner chose the work thread's model `model` (`provider/id`) himself at `at`, with a PATCH from his own page (`App.patch`). Absent for
+   * a model an agent, a job or a script set. On 11-28 fable-sweep.ts flagged agent factory for the Fable 5.2 he had set at 19:19 KST.
+   */
+  modelSet?: { by: "owner"; at: Ms; model: string };
 }
 
 export interface AgentsFile {
