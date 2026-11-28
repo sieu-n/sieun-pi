@@ -13,7 +13,7 @@ test("a risk counts once however many of its label sets fire, and a risk with no
   const file = parseRisks({ risks: [
     { id: "disk", line: "us-metal01 root disk fills", owner: "metal", alertUids: ["metal-host-disk-fill-30d", "metal-host-disk-85"] },
     { id: "wire", line: "Claude wire through CLIProxy", owner: "cliproxy probe", alertUids: ["cliproxy-claude-wire"] },
-    { id: "oom", line: "us-metal02 OOM kills", owner: "box-memory-guard", alertUids: [] },
+    { id: "oom", line: "us-metal02 OOM kills", owner: "metal02-dev-oom", alertUids: [] },
     { id: "typo", line: "WAL archive failing", owner: "metal", alertUids: ["metal-backup-wal-faild"] },
   ] });
   const firing = [alert("metal-host-disk-fill-30d", "2026-10-18T07:45:00.000Z"), alert("metal-host-disk-fill-30d", "2026-10-17T07:45:00.000Z"), alert("other", "2026-10-18T00:00:00.000Z")];
