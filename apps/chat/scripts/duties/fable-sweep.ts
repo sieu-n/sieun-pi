@@ -12,9 +12,10 @@
  *     member the room delivered it to. The 10 min are ten times the about one minute a comm thread takes to ack (c224).
  *   delivery_error: an owner post of the last 3 h whose delivery to an agent failed, still queued after 10 min, or that reached no agent.
  *   job_stuck: a job that reads working whose newest entry is 45 min old or more (sieun-pi AGENTS.md rule 6 reads that as stalled), unless
- *     it waits for a model account: pi-pool holds its thread's tree `pi-durable:<thread>` in an account wait, which covers a parked subagent
- *     (`parkedJobs`), or its root task polls for an account slot. Such a job is alive, and `n.poolWaits` counts it. On 11-27 the 07:27, 10:28
- *     and 12:07 KST sweeps listed two such jobs as stuck while `pi-pool who` showed each waiting for account 7bec9951 with a reserved slot.
+ *     it waits for a model account (`waitsForAccount`, the one rule every kind reads): its turn, or the turn of a working job under it,
+ *     sleeps on pi-pool's account slot, or is in flight while pi-pool holds its thread's tree `pi-durable:<thread>` in an account wait
+ *     (`parkedTrees`). Such a job is alive, and `n.poolWaits` counts it. On 11-27 the 07:27, 10:28 and 12:07 KST sweeps listed two such
+ *     jobs as stuck while `pi-pool who` showed each waiting for account 7bec9951 with a reserved slot.
  *   job_retrying: a job whose run pi-host flags "retrying since HH:MM: <error kind>", a transient error it has retried past 5 minutes and
  *     keeps retrying, which is no stall (packages/pi-host/src/durable/retrying.ts).
  *   job_failed: a job whose last turn failed, with an entry in the last 24 h, and an agent's work or comm thread that failed.
@@ -22,7 +23,12 @@
  *     away or it waited outside its precheck (`notMeasured`).
  *   step_stalled: an open board step with no live job on it, no wait still running, no board.wake the app owes its job or that names it, and
  *     no open owner todo that holds it. A step whose job wrote in the last 45 min still moves, since its parent often closes the step right
- *     after the job reports (the 45 min of rule 6).
+ *     after the job reports (the 45 min of rule 6). A step's jobs are the job it names and every subagent under it, since a job that hands
+ *     its work to subagents ends its own turn and reads idle. A step that waits for a model account is no item and `n.stepPoolWaits` counts
+ *     it: one of its jobs waits, or the agent's work thread waits in its own turn and has not answered since the step last changed
+ *     (`threadWaits`). The 22:31 KST sweep on 11-28 listed five such steps while 1 of 42 Claude accounts took new work: four whose jobs read
+ *     idle with every subagent parked since 20:53 to 22:22 KST, and the first step of an agent made at 22:07 KST whose first turn pi-pool
+ *     had parked since 22:07:51 KST.
  *   model_off: an agent other than this one whose work thread runs on Fable, which the owner keeps for this advisor (msg mwqwsgx9: "main
  *     worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까"), except an agent whose model he set himself from his page (`modelFindings`).
  *
@@ -54,7 +60,8 @@
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
  * Its output's `n` counts what it read, one count per kind: agents, owner posts of the window, live jobs, duties and board steps, and the
- * quiet working jobs that wait for a model account (`poolWaits`), and the duties left out as not measured (`dutiesNotMeasured`).
+ * quiet working jobs and the open steps that wait for a model account (`poolWaits`, `stepPoolWaits`), and the duties left out as not
+ * measured (`dutiesNotMeasured`).
  *
  * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] [PRECHECK_TRIGGER=<trigger>] node --import tsx scripts/duties/fable-sweep.ts
  *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>] [--data-dir <dir>]
@@ -110,14 +117,14 @@ export interface Post {
   id: string; at: number; author: Author; text?: string; answers?: string; deliveries?: Delivery[]; editedAt?: number; mentions?: string[];
   reactions?: { emoji: string; by: Author[] }[]; done?: { at: number }; thread?: { authors?: Author[]; lastAt?: number } | null;
 }
-export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string }; retrying?: string }
+export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string }; parent?: { id: string } | null; retrying?: string }
 export interface Agent {
   id: string; name: string; status: string; thread: string; room?: string; archived?: boolean; test?: boolean; model?: { id: string; label?: string } | null;
   /** Set while the agent runs the model the owner chose for it from his own page (the server's `AgentSummary.modelSet`). */
   modelSet?: { by: string; at: number };
   comm?: { room: string; thread: string; status: string }[];
 }
-export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
+export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; updatedAt?: string; children?: PlanItem[] }
 export interface DutyRunView {
   at: number; verdict: string; summary?: string; error?: string; metrics?: Record<string, { met: boolean }>; hostAway?: string; waitsOn?: string;
   after?: { verdict?: string; summary?: string; metrics?: Record<string, { met: boolean }> }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null;
@@ -183,15 +190,48 @@ export function postFindings(input: {
 }
 
 /**
- * The open steps of a plan with no live job, no running wait, no board.wake the app still owes for it and no open owner todo; `last` gives a
- * job's newest entry time when known. A step's wakes are read as the board tells a chat its unowned steps (`wokenStep` in
- * legacy/prime/user-history/src/apps-step-owners.ts), from the wakes in `wakes`.
+ * What of an agent waits for a model account (`waitsForAccount`): `job` says whether a job does, and `thread` is set while the work thread's
+ * own turn does, with when that thread last answered (undefined before its first answer).
+ */
+export interface AgentWait { job: (job: Job) => boolean; thread?: { answered: number | undefined } }
+
+/**
+ * A step's jobs and the jobs under them, their subagents at any depth, by the `parent` each job names. A job that hands its work to
+ * subagents ends its own turn and reads idle while they work or wait, so a step is read by all of them.
+ */
+function withSubagents(named: readonly Job[], all: readonly Job[]): Job[] {
+  const ids = new Set(named.map(job => job.id));
+  for (let grew = ids.size > 0; grew;) {
+    grew = false;
+    for (const job of all) if (job.parent && ids.has(job.parent.id) && !ids.has(job.id)) { ids.add(job.id); grew = true; }
+  }
+  return all.filter(job => ids.has(job.id));
+}
+
+/**
+ * Whether an open step waits on the agent's work thread's wait for a model account: that thread waits in its own turn and has not answered
+ * since the step last changed or one of its jobs last wrote, so it has had no turn in which to give the step an owner or to close it. A
+ * step that was unowned before the thread's last answer stays an item.
+ */
+function threadWaits(step: PlanItem, family: readonly Job[], wait: AgentWait | undefined, last?: (job: Job) => number | undefined): boolean {
+  if (!wait?.thread) return false;
+  const since = Math.max(Date.parse(step.updatedAt ?? "") || 0, ...family.map(job => last?.(job) ?? 0));
+  return wait.thread.answered === undefined || since > wait.thread.answered;
+}
+
+/**
+ * The open steps of a plan with no live job, no running wait, no board.wake the app still owes for it and no open owner todo (`stalled`),
+ * and how many more are left out because they wait for a model account (`waiting`): one of the step's jobs or their subagents waits
+ * (`wait.job`), or the work thread does (`threadWaits`). A step moves while one of its jobs or their subagents works, sleeps or wrote in
+ * the last 45 min; `last` gives a job's newest entry time when known. A step's wakes are read as the board tells a chat its unowned steps
+ * (`wokenStep` in legacy/prime/user-history/src/apps-step-owners.ts), from the wakes in `wakes`.
  */
 export function stalledSteps(input: {
   agent: Agent; plan: readonly PlanItem[]; todos: readonly Todo[]; jobs: readonly Job[]; now: number; seen: Record<string, number>; last?: (job: Job) => number | undefined;
-  wakes?: readonly Wake[];
-}): Item[] {
+  wakes?: readonly Wake[]; wait?: AgentWait;
+}): { stalled: Item[]; waiting: number } {
   const { agent, todos, jobs, now, seen } = input;
+  let waiting = 0;
   const mine = jobs.filter(job => job.agent?.id === agent.id);
   const chat: AppsChat = { id: agent.id, name: agent.name, board: null, duties: [], thread: agent.thread, jobs: mine.map(job => ({ name: job.name, state: job.status, sessionId: job.id })) };
   const reads = appsOwnerReads(chat, [], input.wakes ?? [], now);
@@ -205,7 +245,10 @@ export function stalledSteps(input: {
       if ((until && until > now) || step.waitFor || ownerHeld(step, todos)) continue;
       if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) continue;
       const named = step.job ? mine.filter(job => job.name === step.job) : [];
-      if (named.some(job => job.status === "working" || job.status === "sleeping" || now - (input.last?.(job) ?? 0) < STUCK_MS)) continue;
+      const family = withSubagents(named, mine);
+      if (family.some(job => input.wait?.job(job))) { waiting += 1; continue; }
+      if (family.some(job => job.status === "working" || job.status === "sleeping" || now - (input.last?.(job) ?? 0) < STUCK_MS)) continue;
+      if (threadWaits(step, family, input.wait, input.last)) { waiting += 1; continue; }
       const key = `${agent.id}/${step.id}`;
       const since = Math.min(seen[key] ?? now, ...named.map(job => job.createdAt));
       const job = named.find(j => j.status === "failed") ?? named[0];
@@ -217,7 +260,7 @@ export function stalledSteps(input: {
     }
   };
   visit(input.plan);
-  return items;
+  return { stalled: items, waiting };
 }
 
 /** The newest entry time of each conversation asked for in one thread file, read only; empty when the file is not on this box. */
@@ -280,21 +323,71 @@ export function noModelTurn(file: string): boolean {
 }
 
 /**
- * The ids of `jobs` whose thread's pool tree `pi-durable:<thread>` pi-pool holds in an account wait past `now`, as the duty card reads it
- * (boards.ts `poolWaitSince`). Every conversation of a thread asks pi-pool under that tree, so a parked subagent counts. Empty when the pool
- * cannot be read.
+ * The `threads` whose pool tree `pi-durable:<thread>` pi-pool holds in an account wait past `now`, read as the duty card reads it (boards.ts
+ * `poolWaitSince`, with the same `readPoolStatus` and `accountSlot`). A work thread, its jobs and their subagents all ask pi-pool under that
+ * one tree, so this says the tree waits and not which conversation of it does (`turnOf`). Empty when the pool cannot be read.
  */
-export async function parkedJobs(jobs: readonly Job[], now: number, read: typeof readPoolStatus = readPoolStatus): Promise<Set<string>> {
-  const trees = [...new Set(jobs.map(job => job.thread))].map(thread => ({ session: `pi-durable:${thread}`, model: null }));
+export async function parkedTrees(threads: readonly string[], now: number, read: typeof readPoolStatus = readPoolStatus): Promise<Set<string>> {
+  const trees = [...new Set(threads)].map(thread => ({ session: `pi-durable:${thread}`, model: null }));
   if (!trees.length) return new Set();
   try {
     const status = await read(trees, { maxAgeMs: 0 });
-    return new Set(jobs.filter(job => {
-      const parts = status.threads.get(threadKey({ session: `pi-durable:${job.thread}`, model: null }));
+    return new Set(trees.filter(tree => {
+      const parts = status.threads.get(threadKey(tree));
       return !!parts && pooledProviders.some(provider => (accountSlot(parts, provider) ?? 0) > now);
-    }).map(job => job.id));
+    }).map(tree => tree.session.slice("pi-durable:".length)));
   } catch {
     return new Set();
+  }
+}
+
+/** The deferred handle id of a task that sleeps until pi-pool has an account slot (`SLOT_HANDLE_ID`, packages/pi-pool/src/durable/pool-provider.ts). */
+const SLOT_HANDLE_ID = "pi-pool-slot";
+
+/**
+ * A conversation's turn in flight, read only from its thread file: "slot" while a foreground task of it that is not terminal sleeps on
+ * pi-pool's account slot, "live" while it has another such task, and undefined when it has none or the file is not on this box. It reads
+ * every open foreground task, not the newest task alone: a message that reaches a parked conversation adds a newer background task.
+ */
+export function turnOf(file: string, conversation: number): "slot" | "live" | undefined {
+  if (!existsSync(file)) return undefined;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    // The status list and the unary pluses keep the read on the status index, a thread's few open tasks: by the conversation index it read
+    // all 7,295 tasks of Search product, misc.'s work thread in 544 ms on 11-28, against 1 ms by status.
+    const rows = db.prepare("SELECT json_extract(record, '$.state.checkpoint.handle.id') AS handle FROM tasks " +
+      "WHERE status IN ('pending', 'running', 'waiting', 'sleeping', 'completing') AND +conversation_id = ? AND +background = 0").all(conversation) as { handle: string | null }[];
+    return rows.some(row => row.handle === SLOT_HANDLE_ID) ? "slot" : rows.length ? "live" : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The one rule for "waits for a model account", which stuck jobs, stalled steps, duty fix steps and an agent's own work thread all read: a
+ * conversation waits when its turn sleeps on pi-pool's account slot, or is in flight while pi-pool holds its thread's tree in an account
+ * wait (`parked`, from `parkedTrees`). A conversation with no turn in flight, such as a job that finished, never waits, however long its
+ * agent's tree is parked.
+ */
+export const waitsForAccount = (turn: ReturnType<typeof turnOf>, parked: boolean): boolean => turn === "slot" || (turn === "live" && parked);
+
+/**
+ * When a conversation last got a model answer, read only from its thread file, or undefined when it has none. An answer that ended in an
+ * error is none, as pi-pool's "the account slot is open" retry text is written as one.
+ */
+export function lastAnswer(file: string, conversation: number): number | undefined {
+  if (!existsSync(file)) return undefined;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT json_extract(record, '$.model[0].timestamp') AS at FROM entries WHERE conversation_id = ? AND json_extract(record, '$.kind') = 'pi.assistant' " +
+      "AND coalesce(json_extract(record, '$.model[0].stopReason'), '') != 'error' ORDER BY id DESC LIMIT 1").get(conversation) as { at: number | null } | undefined;
+    return typeof row?.at === "number" ? row.at : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
   }
 }
 
@@ -313,10 +406,10 @@ export function modelFindings(agents: readonly Agent[], self: string | undefined
 /**
  * The jobs pi-host flags as retrying, the working jobs with no entry for 45 min and the jobs that failed in the last 24 h; `task` gives a
  * stuck job's pi-host task state. A retrying job reads as retrying, never as stuck, since its run still tries. A quiet job that waits for a
- * model account, as `parked` says or its task state's account slot poll, is alive and is no item.
+ * model account, one of `waits` (`waitsForAccount`), is alive and is no item.
  */
 export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | undefined, now: number, task?: (job: Job) => string | undefined,
-  parked: ReadonlySet<string> = new Set()): Item[] {
+  waits: ReadonlySet<string> = new Set()): Item[] {
   const items: Item[] = [];
   for (const job of jobs) {
     const at = last(job);
@@ -327,8 +420,8 @@ export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | u
         ...(at === undefined ? {} : { at }), context: [`started ${ago(now - job.createdAt)} ago, ${job.retrying}`],
       });
     } else if (job.status === "working" && at !== undefined && now - at >= STUCK_MS) {
+      if (waits.has(job.id)) continue;
       const state = task?.(job);
-      if (parked.has(job.id) || state?.includes("account slot")) continue;
       items.push({
         kind: "job_stuck", sig: `stuck:${job.id}`, agent, text: `${agent} job "${job.name}" reads working with no new entry for ${ago(now - at)}`,
         link: `#/c/${job.id}`, at, ...(state ? { context: [`started ${ago(now - job.createdAt)} ago, ${state}`] } : {}),
@@ -351,23 +444,30 @@ export function notMeasured(runs: readonly DutyRunView[]): string | undefined {
   return newest.hostAway ? `its box ${newest.hostAway} is away` : newest.waitsOn ? `it waits on ${newest.waitsOn}` : undefined;
 }
 
-/** A duty's last three measured runs and the fix step of its newest, one line each, for the reviewer to judge a miss without opening it. */
+/**
+ * A duty's last three measured runs and the fix step of its newest, one line each, for the reviewer to judge a miss without opening it. A
+ * fix line is what that run stored, so it says "at that run": on 11-28 agent factory's d2 item read "p279, no job" from its 22:04:23 KST
+ * run at 22:31 KST, 26 min after the board put a job on p279 at 22:05:47 KST. The board as it is now is in the item's passed on line.
+ */
 export function dutyContext(runs: readonly DutyRunView[]): string[] {
   const kst = (at: number): string => new Date(at + 9 * HOUR).toISOString().slice(5, 16).replace("T", " ");
   const lines = runs.filter(run => run.verdict !== "skipped").slice(0, 3).map(run =>
     `${kst(run.at)} KST ${run.after?.verdict ?? run.verdict}: ${oneLine(run.after?.summary ?? run.error ?? run.summary ?? "", 120)}`);
-  const fixes = Object.entries(runs[0]?.fixes ?? {}).map(([key, fix]) => `${key} fix step ${fix.step}${fix.job ? `, job ${fix.job} ${fix.live ? "live" : "not live"}` : ", no job"}`);
+  const fixes = Object.entries(runs[0]?.fixes ?? {}).map(([key, fix]) => `${key} fix step ${fix.step} at that run${fix.job ? `, job ${fix.job} ${fix.live ? "live" : "not live"}` : ", no job"}`);
   return [...lines, ...fixes];
 }
 
 type DutyMissInput = {
   agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; todos?: readonly Todo[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
+  wait?: AgentWait; last?: (job: Job) => number | undefined;
 };
 
 /**
  * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or for each
  * metric the newest run missed an open fix step that names that duty and metric (`duty` is `<dutyId>/<metric>`) whose job works or sleeps
- * or that a board.wake or a working subagent moves (`wokenStep`), or that an open For you todo holds (`boardHold`, as d9 reads it). A closed
+ * or that a board.wake or a working subagent moves (`wokenStep`), or that an open For you todo holds (`boardHold`, as d9 reads it), or that
+ * waits for a model account as a stalled step does (`stalledSteps`): at 22:31 KST on 11-28 agent factory d2 read not passed on for
+ * search_p90_ms while the job on its step p279 read idle with both subagents asleep on the account slot since 22:20 KST. A closed
  * step covers nothing, and neither does a step for another metric of the duty: agent factory d2 read passed on through p235 while its
  * slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2
  * missed on their first runs at 15:00 KST, each with fix steps (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST verify run still
@@ -407,12 +507,19 @@ function dutyFixes(input: DutyMissInput): string | { missed: string[]; moved: Ma
       if (step.status === "done" || step.status === "dropped" || !step.duty) continue;
       const [id, key] = step.duty.split("/");
       if (id !== dutyId || !key || !missed.includes(key) || moved.has(key)) continue;
-      const live = step.job ? mine.find(job => job.name === step.job && (job.status === "working" || job.status === "sleeping")) : undefined;
-      if (live) moved.set(key, `${key} fix step ${step.id}, job ${live.name} ${live.status}`);
+      const named = step.job ? mine.filter(job => job.name === step.job) : [];
+      const family = withSubagents(named, mine);
+      const works = (job: Job): boolean => job.status === "working" || job.status === "sleeping";
+      const waits = family.find(job => input.wait?.job(job));
+      const live = named.find(works) ?? family.find(works);
+      const who = (job: Job): string => named.includes(job) ? `job ${job.name}` : `subagent ${job.name} of job ${step.job}`;
+      if (waits) moved.set(key, `${key} fix step ${step.id}, ${who(waits)} waits for a model account`);
+      else if (live) moved.set(key, `${key} fix step ${step.id}, ${who(live)} ${live.status}`);
       else if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) moved.set(key, `${key} fix step ${step.id}, a board.wake or subagent moves it`);
       else {
         const hold = ownerHeld(step, input.todos ?? []);
         if (hold) moved.set(key, `${key} fix step ${step.id}, held for the owner by ${hold}`);
+        else if (threadWaits(step, family, input.wait, input.last)) moved.set(key, `${key} fix step ${step.id}, the work thread waits for a model account`);
       }
     }
   };
@@ -524,11 +631,22 @@ if (isMain(import.meta.url)) {
     if (!times.has(job.id)) times.set(job.id, lastEntries(join(threadsDir, `${job.thread}.sqlite`), [job.conversation]).get(job.conversation));
     return times.get(job.id);
   };
-  const taskOf = (job: Job): string | undefined => taskState(join(threadsDir, `${job.thread}.sqlite`), job.conversation);
+  const fileOf = (thread: string): string => join(threadsDir, `${thread}.sqlite`);
+  const taskOf = (job: Job): string | undefined => taskState(fileOf(job.thread), job.conversation);
   const quiet = liveJobs.filter(job => job.status === "working" && !job.retrying && now - (lastOf(job) ?? now) >= STUCK_MS);
-  const parked = await parkedJobs(quiet, now);
-  const poolWaits = quiet.filter(job => parked.has(job.id) || taskOf(job)?.includes("account slot")).length;
-  items.push(...jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now, taskOf, parked));
+  // Who waits for a model account, by the one rule (`waitsForAccount`): each agent's work thread in its own turn, and each quiet working job
+  // when it or a working job under it does, since a duty job whose own turn ended reads working while a subagent waits (11-27). pi-pool is
+  // asked only about the trees of turns in flight that do not sleep on the slot themselves.
+  const families = new Map(quiet.map(job => [job.id, withSubagents([job], liveJobs).filter(each => each.status === "working")] as const));
+  const turnKey = (thread: string, conversation: number): string => `${thread}:${conversation}`;
+  const judged = new Map([...[...families.values()].flat().map(job => [job.thread, job.conversation] as const), ...agents.map(agent => [agent.thread, 1] as const)]
+    .map(([thread, conversation]) => [turnKey(thread, conversation), { thread, turn: turnOf(fileOf(thread), conversation) }] as const));
+  const parked = await parkedTrees([...judged.values()].filter(each => each.turn === "live").map(each => each.thread), now);
+  const waitingTurns = new Set([...judged].filter(([, each]) => waitsForAccount(each.turn, parked.has(each.thread))).map(([key]) => key));
+  const waitingJobs = new Set(quiet.filter(job => families.get(job.id)!.some(each => waitingTurns.has(turnKey(each.thread, each.conversation)))).map(job => job.id));
+  const agentWait = (agent: Agent): AgentWait =>
+    ({ job: job => waitingJobs.has(job.id), ...(waitingTurns.has(turnKey(agent.thread, 1)) ? { thread: { answered: lastAnswer(fileOf(agent.thread), 1) } } : {}) });
+  items.push(...jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now, taskOf, waitingJobs));
   items.push(...modelFindings(agents, values.agent));
   for (const agent of agents) {
     if (agent.status === "failed") items.push({ kind: "job_failed", sig: `failed:${agent.thread}`, agent: agent.name, text: `${agent.name}'s work thread failed`, link: `#/c/${agent.thread}` });
@@ -539,7 +657,7 @@ if (isMain(import.meta.url)) {
 
   // Boards and duties, per agent.
   const seen: Record<string, number> = {};
-  const read = { agents: agents.length, posts: ownerHits.length, jobs: liveJobs.length, duties: 0, dutiesNotMeasured: 0, steps: 0, poolWaits };
+  const read = { agents: agents.length, posts: ownerHits.length, jobs: liveJobs.length, duties: 0, dutiesNotMeasured: 0, steps: 0, poolWaits: waitingJobs.size, stepPoolWaits: 0 };
   await Promise.all(agents.map(async agent => {
     const [board, duties] = await Promise.all([
       get<{ board: { plan: PlanItem[]; todos: Todo[] } | null }>(server, `/api/agents/${agent.id}/board`).catch(() => ({ board: null })),
@@ -547,10 +665,12 @@ if (isMain(import.meta.url)) {
     ]);
     read.duties += duties.duties.length;
     read.steps += board.board?.plan.length ?? 0;
+    const wait = agentWait(agent);
     if (board.board) {
-      const steps = stalledSteps({ agent, plan: board.board.plan, todos: board.board.todos ?? [], jobs: liveJobs, now, seen: state.seen ?? {}, last: lastOf, wakes });
-      for (const step of steps) seen[step.sig.slice("step:".length)] = Math.min(state.seen?.[step.sig.slice("step:".length)] ?? now, step.at ?? now);
-      items.push(...steps);
+      const steps = stalledSteps({ agent, plan: board.board.plan, todos: board.board.todos ?? [], jobs: liveJobs, now, seen: state.seen ?? {}, last: lastOf, wakes, wait });
+      for (const step of steps.stalled) seen[step.sig.slice("step:".length)] = Math.min(state.seen?.[step.sig.slice("step:".length)] ?? now, step.at ?? now);
+      items.push(...steps.stalled);
+      read.stepPoolWaits += steps.waiting;
     }
     for (const row of duties.duties) {
       // This agent's own sweep duty is the one judging, so its misses are never a finding of it.
@@ -558,7 +678,7 @@ if (isMain(import.meta.url)) {
       if (notMeasured(row.runs)) { read.dutiesNotMeasured += 1; continue; }
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
-      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes };
+      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes, wait, last: lastOf };
       const has = passedOn(miss);
       const left = has ? undefined : unmovedMetrics(miss);
       items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at,

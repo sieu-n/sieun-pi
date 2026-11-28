@@ -12,10 +12,12 @@
  * 7. A duty miss its owner has already, a fix step with a working or sleeping job or a board.wake, or the duty's first run, is passed on and
  *    never fresh, and a verify run (a closed fix step) confirms the last sweep's items and starts no new sweep (11-24, 15:32 KST).
  * 8. A Fable work thread is an item unless it is the advisor's own or the owner set that model himself from his page (11-28, 19:19 KST).
+ * 9. One rule says who waits for a model account, and a step or duty fix step that waits is no finding: its job's subagents wait while the
+ *    job reads idle, or the agent's work thread waits in its own turn and has not answered since the step changed (11-28, 22:31 KST).
  */
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -26,8 +28,8 @@ import { promisify } from "node:util";
 import { after, test } from "node:test";
 import { measure } from "../../server/duty-run.ts";
 import {
-  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, notMeasured, parkedJobs, passedOn, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
-  type PlanItem, type Post,
+  answerOf, dutyContext, jobFindings, lastAnswer, lastEntries, noModelTurn, notMeasured, parkedTrees, passedOn, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, turnOf,
+  waitsForAccount, worthALook, type AgentWait, type DutyRunView, type Item, type Job, type PlanItem, type Post,
 } from "../../scripts/duties/fable-sweep.ts";
 import { judge, type Duty, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 
@@ -100,7 +102,7 @@ test("a step is stalled only when nothing moves it", () => {
   ];
   const jobs = [job("a", "working"), job("b", "idle"), job("c", "idle")];
   const last = (j: Job) => (j.name === "c" ? now - 5 * MIN : now - 120 * MIN);
-  const items = stalledSteps({ agent: theAgent, plan, todos: [{ id: "t1", text: "go?", done: false, from: "agent", step: "p4" }], jobs, now, seen: { "ag_x/p7": now - 600 * MIN }, last });
+  const items = stalledSteps({ agent: theAgent, plan, todos: [{ id: "t1", text: "go?", done: false, from: "agent", step: "p4" }], jobs, now, seen: { "ag_x/p7": now - 600 * MIN }, last }).stalled;
   assert.deepEqual(items.map(i => [i.sig, (now - i.at!) / MIN]), [["step:ag_x/p2", 300], ["step:ag_x/p7", 600]], "a step with a job is as old as its job");
 });
 
@@ -117,8 +119,8 @@ test("a step whose idle job sleeps on a board.wake the app owes moves, and one w
     { session: "t--2", note: "a: waits on staging", since: now - 150 * MIN, on: check },
     { session: "t--1", note: "p3: release lands", since: now - 150 * MIN, on: check },
   ];
-  assert.deepEqual(stalledSteps({ agent: theAgent, plan, todos: [], jobs, now, seen: {}, last, wakes }).map(i => i.sig), ["step:ag_x/p2"]);
-  assert.deepEqual(stalledSteps({ agent: theAgent, plan, todos: [], jobs, now, seen: {}, last }).map(i => i.sig), ["step:ag_x/p1", "step:ag_x/p2", "step:ag_x/p3"]);
+  assert.deepEqual(stalledSteps({ agent: theAgent, plan, todos: [], jobs, now, seen: {}, last, wakes }).stalled.map(i => i.sig), ["step:ag_x/p2"]);
+  assert.deepEqual(stalledSteps({ agent: theAgent, plan, todos: [], jobs, now, seen: {}, last }).stalled.map(i => i.sig), ["step:ag_x/p1", "step:ag_x/p2", "step:ag_x/p3"]);
 });
 
 test("a working job with no entry for 45 min is stuck, and a failure is listed for 24 h", () => {
@@ -223,24 +225,200 @@ test("a duty's context is its last three measured runs, after-job measures first
     { at: at - 3, verdict: "missed", summary: "x 2" },
     { at: at - 4, verdict: "missed", summary: "x 3" },
   ]);
-  assert.deepEqual(lines, ["11-22 09:00 KST met: x 0", "11-22 08:59 KST error: Command failed", "11-22 08:59 KST missed: x 2", "x fix step p9, job fix x live"]);
+  assert.deepEqual(lines, ["11-22 09:00 KST met: x 0", "11-22 08:59 KST error: Command failed", "11-22 08:59 KST missed: x 2", "x fix step p9 at that run, job fix x live"]);
 });
 
-test("a quiet job whose tree pi-pool parks for a model account is alive, not stuck, while its root task is terminal (11-27, 07:27 to 12:07 KST)", async () => {
-  const jobs = [job("geonode", "working"), job("leftovers", "working"), job("polls", "working"), job("quiet", "working")].map(j => ({ ...j, thread: j.name }));
+/**
+ * A pi-host thread file with the tables the sweep reads: one task per [conversation, status, deferred handle id, background], and one entry
+ * per [conversation, kind, timestamp, stop reason].
+ */
+function threadFile(folder: string, thread: string, tasks: readonly (readonly [number, string, string?, number?])[], entries: readonly (readonly [number, string, number, string?])[] = []): string {
+  mkdirSync(folder, { recursive: true });
+  const file = join(folder, `${thread}.sqlite`);
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, head INTEGER, commit_seq INTEGER NOT NULL, record TEXT NOT NULL)");
+  db.exec("CREATE TABLE tasks (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, background INTEGER NOT NULL, record TEXT NOT NULL)");
+  const task = db.prepare("INSERT INTO tasks (conversation_id, kind, status, background, record) VALUES (?, ?, ?, ?, ?)");
+  for (const [conversation, status, handle, background = 0] of tasks) {
+    task.run(conversation, background ? "rlm.deliver" : "pi.generation", status, background,
+      JSON.stringify(handle ? { state: { checkpoint: { phase: "poll", handle: { id: handle, data: { message: "waiting for an account slot" } } } } } : {}));
+  }
+  const entry = db.prepare("INSERT INTO entries (conversation_id, commit_seq, record) VALUES (?, 0, ?)");
+  for (const [conversation, kind, at, stopReason] of entries) {
+    entry.run(conversation, JSON.stringify({ kind, model: [{ role: kind === "pi.assistant" ? "assistant" : "user", timestamp: at, ...(stopReason ? { stopReason } : {}) }] }));
+  }
+  db.close();
+  return file;
+}
+
+test("one rule says who waits for a model account: a turn asleep on pi-pool's slot, or in flight while pi-pool parks its tree (11-27, 07:27 to 12:07 KST)", async () => {
+  const file = threadFile(dir, "rule", [[2, "terminal"], [3, "sleeping", "pi-pool-slot"], [3, "waiting", undefined, 1], [4, "running"], [5, "waiting", undefined, 1], [6, "sleeping", "pi-pool-turn"]]);
+  assert.deepEqual([2, 3, 4, 5, 6].map(conversation => turnOf(file, conversation)), [undefined, "slot", "live", undefined, "live"],
+    "a newer background delivery hides no slot wait and is no turn, and a wait for a working slot is no account wait");
+  assert.equal(turnOf(join(dir, "missing.sqlite"), 1), undefined);
+  assert.deepEqual([waitsForAccount("slot", false), waitsForAccount("live", true), waitsForAccount("live", false), waitsForAccount(undefined, true)], [true, true, false, false],
+    "a conversation with no turn in flight never waits, however long its tree is parked");
+
   const who = (slotAt: number | null) => ({ code: 0, err: "", out: JSON.stringify({ providers: { anthropic: { wait: slotAt === null ? null : { account: "7bec9951", slot_at: slotAt / 1000, reserved: true } } } }) });
   const slots: Record<string, number | null> = { geonode: now + 20 * MIN, leftovers: now + 10 * MIN, polls: null, quiet: now - MIN };
   const asked: string[][] = [];
   const read = (async (threads: readonly { session: string | null; model: string | null }[]) => {
     asked.push(threads.map(t => t.session ?? ""));
     return { at: now, queue: who(null), config: who(null), threads: new Map(threads.map(t => [`${t.session}|`, { who: who(slots[t.session!.replace("pi-durable:", "")]!), ls: {}, at: now }])) };
-  }) as unknown as Parameters<typeof parkedJobs>[2];
-  const parked = await parkedJobs(jobs, now, read);
-  assert.deepEqual([...parked].sort(), ["t:geonode", "t:leftovers"]);
+  }) as unknown as Parameters<typeof parkedTrees>[2];
+  assert.deepEqual([...await parkedTrees(["geonode", "leftovers", "polls", "geonode", "quiet"], now, read)].sort(), ["geonode", "leftovers"]);
   assert.deepEqual(asked, [["pi-durable:geonode", "pi-durable:leftovers", "pi-durable:polls", "pi-durable:quiet"]], "one pool read, one tree per thread");
-  const task = (j: Job) => j.name === "polls" ? "pi-host task sleeping: waiting for an account slot" : "pi-host task terminal";
-  assert.deepEqual(jobFindings(jobs, () => now - 5 * 60 * MIN, now, task, parked).map(i => i.sig), ["stuck:t:quiet"]);
-  assert.equal((await parkedJobs(jobs, now, (async () => { throw new Error("pi-pool failed"); }) as unknown as Parameters<typeof parkedJobs>[2])).size, 0);
+  assert.equal((await parkedTrees(["geonode"], now, (async () => { throw new Error("pi-pool failed"); }) as unknown as Parameters<typeof parkedTrees>[2])).size, 0);
+
+  const jobs = [job("geonode", "working"), job("quiet", "working")];
+  assert.deepEqual(jobFindings(jobs, () => now - 5 * 60 * MIN, now, () => "pi-host task terminal", new Set(["t:geonode"])).map(i => i.sig), ["stuck:t:quiet"]);
+});
+
+test("a step whose job read idle while its subagents waited for a model account is no item (fable auditor p70 and three more, 11-28 22:31 KST)", () => {
+  const auditor = { id: "ag_fable-auditor", name: "fable auditor", status: "working", thread: "ta" };
+  const of = (name: string, conversation: number, status: string, parent?: number): Job => ({ id: `ta:${conversation}`, name, status, thread: "ta", conversation, createdAt: now - 102 * MIN,
+    agent: { id: auditor.id, name: auditor.name }, ...(parent ? { parent: { id: `ta:${parent}` } } : {}) });
+  const outreach = of("can outreach run on virev crm", 37343, "idle");
+  const subs = [of("gtm-sends", 37429, "working", 37343), of("crm-contacts", 37440, "working", 37343)];
+  const ended = subs.map(sub => ({ ...sub, status: "idle" }));
+  const plan = [{ id: "p70", text: "Say whether our outreach can run on the product's own CRM", status: "doing", job: outreach.name }];
+  // The job's own turn ended at 20:50 KST, and each subagent's turn slept on the account slot from 20:53 KST.
+  const file = threadFile(dir, "ta", [[37343, "terminal"], [37429, "sleeping", "pi-pool-slot"], [37440, "sleeping", "pi-pool-slot"]]);
+  const waiting = new Set(subs.filter(sub => waitsForAccount(turnOf(file, sub.conversation), false)).map(sub => sub.id));
+  assert.deepEqual([...waiting], ["ta:37429", "ta:37440"]);
+  assert.equal(waitsForAccount(turnOf(file, outreach.conversation), true), false, "the job itself has no turn in flight, so only its subagents wait");
+  const last = () => now - 98 * MIN;
+  const steps = (jobs: Job[], wait?: AgentWait) => {
+    const read = stalledSteps({ agent: auditor, plan, todos: [], jobs, now, seen: {}, last, ...(wait ? { wait } : {}) });
+    return [read.stalled.map(i => i.text), read.waiting];
+  };
+  assert.deepEqual(steps([outreach, ...subs], { job: each => waiting.has(each.id) }), [[], 1], "counted as waiting for an account, not listed");
+  assert.deepEqual(steps([outreach, ...subs]), [[], 0], "a subagent that works moves its job's step");
+  assert.deepEqual(steps([outreach, ...ended, of("deep", 37500, "sleeping", 37429)]), [[], 0], "at any depth below the job");
+  assert.deepEqual(steps([outreach, ...ended]),
+    [["fable auditor p70 doing, its job can outreach run on virev crm is idle, open 102 min+: Say whether our outreach can run on the product's own CRM"], 0],
+    "a job whose subagents all ended stalls its step");
+  assert.deepEqual(jobFindings(subs, last, now, undefined, waiting), [], "and the waiting subagents are no stuck jobs");
+});
+
+test("a duty miss whose fix step's job read idle while its subagents waited for a model account is passed on (agent factory d2 p279, 11-28 22:31 KST)", () => {
+  const factory = { id: "ag_agent-factory", name: "agent factory", status: "working", thread: "tf" };
+  const of = (name: string, conversation: number, status: string, parent?: number): Job => ({ id: `tf:${conversation}`, name, status, thread: "tf", conversation, createdAt: now - 180 * MIN,
+    agent: { id: factory.id, name: factory.name }, ...(parent ? { parent: { id: `tf:${parent}` } } : {}) });
+  const burst = of("his calls behind a read burst", 310641, "idle");
+  const subs = [of("burst-reads", 310777, "working", 310641), of("own-waits", 310793, "working", 310641)];
+  const plan: PlanItem[] = [
+    { id: "p155", text: "Stop page-load read-ahead from delaying the owner's own calls", status: "doing", duty: "d2/slowest_api_p90_ms", job: burst.name },
+    { id: "p279", text: "Cut the slow Meilisearch answers behind search", status: "doing", duty: "d2/search_p90_ms", job: burst.name, updatedAt: new Date(now - 26 * MIN).toISOString() },
+  ];
+  // The 22:04:23 KST run stored p279 with no job, 84 s before the board put the job on it.
+  const runs: DutyRunView[] = [
+    { ...missedRun(27, "sw factory stays snappy duty 261128-220423", ["slowest_api_p90_ms", "search_p90_ms"]), fixes: { slowest_api_p90_ms: { step: "p155", job: burst.name, live: true }, search_p90_ms: { step: "p279", live: false } } },
+    missedRun(960, "sw factory stays snappy duty 261128-063023", ["search_p90_ms"]),
+  ];
+  assert.deepEqual(dutyContext(runs).slice(2), ["slowest_api_p90_ms fix step p155 at that run, job his calls behind a read burst live", "search_p90_ms fix step p279 at that run, no job"],
+    "a stored fix line says it is that run's reading, not the board's");
+  const waiting = new Set(subs.map(sub => sub.id));
+  const miss = (jobs: Job[], wait?: AgentWait) => ({ agent: factory, dutyId: "d2", runs, plan, jobs, now, ...(wait ? { wait } : {}) });
+  const waits = "subagent burst-reads of job his calls behind a read burst waits for a model account";
+  assert.equal(passedOn(miss([burst, ...subs], { job: each => waiting.has(each.id) })), `slowest_api_p90_ms fix step p155, ${waits}; search_p90_ms fix step p279, ${waits}`);
+  assert.equal(unmovedMetrics(miss([burst, ...subs], { job: each => waiting.has(each.id) })), undefined);
+  assert.equal(passedOn(miss([burst, ...subs])), "slowest_api_p90_ms fix step p155, subagent burst-reads of job his calls behind a read burst working; " +
+    "search_p90_ms fix step p279, subagent burst-reads of job his calls behind a read burst working", "a subagent that works moves its job's fix step");
+  const ended = subs.map(sub => ({ ...sub, status: "idle" }));
+  assert.equal(passedOn(miss([burst, ...ended])), undefined, "a job whose subagents all ended moves nothing");
+  assert.equal(unmovedMetrics(miss([burst, ...ended])), "not passed on: no fix step a job, board.wake or subagent moves for slowest_api_p90_ms, search_p90_ms");
+});
+
+test("a new agent's first step is no item while its first turn waits for a model account, and a step its work thread answered after still is (enrichment researcher p1, 11-28 22:31 KST)", () => {
+  const made = now - 24 * MIN;
+  const researcher = { id: "ag_enrichment-researcher", name: "enrichment researcher", status: "working", thread: "te" };
+  const step = (changed: number | undefined, extra: Partial<PlanItem> = {}): PlanItem =>
+    ({ id: "p1", text: "Recommend what to do with the AI enrichment pipeline", status: "todo", ...(changed === undefined ? {} : { updatedAt: new Date(changed).toISOString() }), ...extra });
+  const steps = (plan: PlanItem[], wait?: AgentWait) => {
+    const read = stalledSteps({ agent: researcher, plan, todos: [], jobs: [], now, seen: {}, ...(wait ? { wait } : {}) });
+    return [read.stalled.map(i => i.sig), read.waiting];
+  };
+  const noJob = () => false;
+  // Made at 22:07:13 KST; pi-pool parked its first turn at 22:07:51 KST, and a message from Crawler guy reached it while it waited.
+  const first = threadFile(dir, "te", [[1, "sleeping", "pi-pool-slot"], [1, "waiting", undefined, 1]], [[1, "agent.message", made]]);
+  assert.equal(turnOf(first, 1), "slot");
+  assert.equal(lastAnswer(first, 1), undefined);
+  assert.equal(lastAnswer(join(dir, "missing.sqlite"), 1), undefined);
+  assert.deepEqual(steps([step(made)], { job: noJob, thread: { answered: lastAnswer(first, 1) } }), [[], 1], "the work thread has had no turn in which to give it a job");
+  assert.deepEqual(steps([step(undefined)], { job: noJob, thread: { answered: undefined } }), [[], 1], "nor has a step with no change time");
+  assert.deepEqual(steps([step(made)]), [["step:ag_enrichment-researcher/p1"], 0], "a step with no job on a thread that does not wait is nobody's");
+
+  const later = threadFile(dir, "te-answered", [[1, "sleeping", "pi-pool-slot"]], [[1, "pi.assistant", made + 5 * MIN], [1, "pi.assistant", made + 20 * MIN, "error"], [3, "pi.assistant", made + 22 * MIN]]);
+  assert.equal(lastAnswer(later, 1), made + 5 * MIN, "an answer that ended in an error is none, and a job's answer is not the work thread's");
+  const wait: AgentWait = { job: noJob, thread: { answered: lastAnswer(later, 1) } };
+  assert.deepEqual(steps([step(made)], wait), [["step:ag_enrichment-researcher/p1"], 0], "the thread answered after the step was made and gave it no job, so it stays an item");
+  assert.deepEqual(steps([step(undefined)], wait), [["step:ag_enrichment-researcher/p1"], 0]);
+  assert.deepEqual(steps([step(made + 10 * MIN)], wait), [[], 1], "a step changed after the thread's last answer waits with it");
+
+  const fix = step(made + 10 * MIN, { duty: "d1/cost_per_1000" });
+  const miss = { agent: researcher, dutyId: "d1", runs: [missedRun(5, "cost", ["cost_per_1000"]), missedRun(200, "cost", ["cost_per_1000"])], plan: [fix], jobs: [], now };
+  assert.equal(passedOn({ ...miss, wait }), "cost_per_1000 fix step p1, the work thread waits for a model account");
+  assert.equal(passedOn(miss), undefined);
+});
+
+/**
+ * The 22:31 KST sweep of 11-28 through the real precheck in peek mode, while 1 of 42 Claude accounts took new work. It listed fable auditor's
+ * p70 as "its job is idle" and enrichment researcher's p1 as "no job", and read agent factory's d2 as not passed on for p279. In each, the
+ * turn that would move the step slept on pi-pool's account slot. A duty job whose own turn ended reads working while its subagent waits (11-27).
+ */
+test("a sweep lists no step, duty or job that waits for a model account and counts each in n (11-28 22:31 KST)", async () => {
+  const live = Date.now();
+  const made = live - 24 * MIN;
+  const agentOf = (slug: string, name: string, thread: string) => ({ id: `ag_${slug}`, name, status: "working", thread, room: `dm_${slug}` });
+  const [auditor, factory, researcher] = [agentOf("fable-auditor", "fable auditor", "ta"), agentOf("agent-factory", "agent factory", "tf"), agentOf("enrichment-researcher", "enrichment researcher", "te")];
+  const jobOf = (owner: { id: string; name: string }, thread: string, conversation: number, name: string, status: string, parent?: string) =>
+    ({ id: conversation === 1 ? thread : `${thread}:${conversation}`, name, status, thread, conversation, createdAt: live - 180 * MIN, agent: { id: owner.id, name: owner.name }, ...(parent ? { parent: { id: parent } } : {}) });
+  const routes: Record<string, unknown> = {
+    "/api/agents": [auditor, factory, researcher],
+    "/api/jobs": [
+      jobOf(auditor, "ta", 37343, "can outreach run on virev crm", "idle"), jobOf(auditor, "ta", 37429, "gtm-sends", "working", "ta:37343"),
+      jobOf(factory, "tf", 310641, "his calls behind a read burst", "idle"), jobOf(factory, "tf", 310777, "burst-reads", "working", "tf:310641"),
+      jobOf(factory, "td", 1, "Vendor bills stay inside plan duty 261126-061043", "working"), jobOf(factory, "td", 5, "vercel spend cut", "working", "td"),
+      jobOf(factory, "tf", 400, "release walk", "working"),
+    ],
+    "/api/search/recent": { hits: [] },
+    "/api/agents/ag_fable-auditor/board": { board: { todos: [], plan: [{ id: "p70", text: "Say whether our outreach can run on the product's own CRM", status: "doing", job: "can outreach run on virev crm" }] } },
+    "/api/agents/ag_fable-auditor/duties": { duties: [] },
+    "/api/agents/ag_agent-factory/board": { board: { todos: [], plan: [{ id: "p279", text: "Cut the slow Meilisearch answers", status: "doing", duty: "d2/search_p90_ms", job: "his calls behind a read burst" }] } },
+    "/api/agents/ag_agent-factory/duties": { duties: [{ duty: { id: "d2", name: "sw factory stays snappy" }, paused: false, last: { verdict: "missed", at: live - 27 * MIN, streak: 20 }, runs: [
+      { at: live - 27 * MIN, verdict: "missed", summary: "search_p90_ms 1305 ms", metrics: { search_p90_ms: { met: false } }, fixes: { search_p90_ms: { step: "p279", live: false } }, job: { id: "j1", name: "snappy duty 1" } },
+      { at: live - 960 * MIN, verdict: "missed", summary: "search_p90_ms 338 ms", metrics: { search_p90_ms: { met: false } }, job: { id: "j0", name: "snappy duty 0" } },
+    ] }] },
+    "/api/agents/ag_enrichment-researcher/board": { board: { todos: [], plan: [{ id: "p1", text: "Recommend what to do with the AI enrichment pipeline", status: "todo", updatedAt: new Date(made).toISOString() }] } },
+    "/api/agents/ag_enrichment-researcher/duties": { duties: [] },
+  };
+  const server = createServer((req, res) => {
+    const body = routes[new URL(req.url ?? "/", "http://x").pathname];
+    res.writeHead(body === undefined ? 404 : 200, { "content-type": "application/json" }).end(JSON.stringify(body ?? {}));
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const work = mkdtempSync(join(tmpdir(), "fable-sweep-waits-"));
+  try {
+    const threads = join(work, "threads");
+    const old = live - 98 * MIN;
+    threadFile(threads, "ta", [[37343, "terminal"], [37429, "sleeping", "pi-pool-slot"]], [[37343, "pi.assistant", old], [37429, "pi.tool-result", old]]);
+    threadFile(threads, "tf", [[310641, "terminal"], [310777, "sleeping", "pi-pool-slot"], [400, "terminal"]], [[310641, "pi.assistant", old], [310777, "pi.tool-result", old], [400, "pi.tool-result", old]]);
+    threadFile(threads, "td", [[1, "terminal"], [5, "sleeping", "pi-pool-slot"]], [[1, "pi.assistant", old], [5, "pi.tool-result", old]]);
+    threadFile(threads, "te", [[1, "sleeping", "pi-pool-slot"]], [[1, "agent.message", made]]);
+    const out = join(work, "peek.json");
+    await promisify(execFile)("node", ["--import", "tsx", "scripts/duties/fable-sweep.ts", "--agent", "ag_fable-auditor", "--server", `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      "--threads-dir", threads, "--data-dir", join(work, "data")], { cwd: join(dirname(fileURLToPath(import.meta.url)), "../.."), env: { ...process.env, PRECHECK_MODE: "peek", OUTPUT_FILE: out } });
+    const { n, items } = JSON.parse(readFileSync(out, "utf8")) as { n: Record<string, number>; items: (Item & { fresh: boolean })[] };
+    assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
+      ["duty:ag_agent-factory/d2", false, "search_p90_ms fix step p279, subagent burst-reads of job his calls behind a read burst waits for a model account"],
+      ["stuck:tf:400", true, undefined],
+    ], "the three steps and the waiting jobs are no items; a quiet working job with no turn in flight still is");
+    assert.deepEqual([n.poolWaits, n.stepPoolWaits], [4, 3], "two waiting subagents, the duty job above its waiting subagent and that subagent; p70, p279 and p1");
+  } finally {
+    server.close();
+    rmSync(work, { recursive: true, force: true });
+  }
 });
 
 const crawler = { id: "ag_crawler-guy", name: "Crawler guy", status: "idle", thread: "tc" };
@@ -326,7 +504,7 @@ test("a duty miss whose fix steps wait on an open For you todo is passed on, as 
   assert.equal(unmovedMetrics(miss([t8])), undefined);
   assert.equal(passedOn(miss([{ ...t8, done: true }])), undefined, "an answered todo holds nothing");
   assert.equal(unmovedMetrics(miss([{ ...t8, done: true }])), "not passed on: no fix step a job, board.wake or subagent moves for unanswered_chats_24h, oldest_unanswered_chat_hours");
-  const steps = (todos: Todos) => stalledSteps({ agent: crm, plan: [plan[0]!], todos, jobs: [idle], now, seen: {}, last: () => now - 2000 * MIN });
+  const steps = (todos: Todos) => stalledSteps({ agent: crm, plan: [plan[0]!], todos, jobs: [idle], now, seen: {}, last: () => now - 2000 * MIN }).stalled;
   assert.deepEqual(steps([t8]), [], "a step an open todo links is the owner's");
   assert.deepEqual(steps([{ id: "t8", text: "Send the p17 replies?", done: false, from: "agent" }]), [], "a todo that names the step's id links it too, as d9 reads it");
   assert.deepEqual(steps([{ ...t8, done: true }]).map(i => i.sig), ["step:ag_crm-developer-vp/p17"]);
@@ -399,7 +577,7 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
     const scheduled = await measureAs("schedule");
     assert.equal(scheduled.record.metrics.findings_unposted?.value, 1, "only seo d1, which nobody has; Crawler guy's d1 and d2 are passed on");
     const detail = JSON.parse(readFileSync(scheduled.record.detail!, "utf8")) as { n: Record<string, number>; items: (Item & { fresh: boolean })[] };
-    assert.deepEqual(detail.n, { agents: 3, posts: 0, jobs: 1, duties: 4, dutiesNotMeasured: 1, steps: 1, poolWaits: 0 }, "n counts each kind the sweep read");
+    assert.deepEqual(detail.n, { agents: 3, posts: 0, jobs: 1, duties: 4, dutiesNotMeasured: 1, steps: 1, poolWaits: 0, stepPoolWaits: 0 }, "n counts each kind the sweep read");
     const items = detail.items;
     assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
       ["duty:ag_crawler-guy/d1", false, "proxy_kb_per_read fix step p48, job crawler ops train working"],
