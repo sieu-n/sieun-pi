@@ -124,3 +124,30 @@ test("a reopen brings a board change the page missed while its socket was down",
   const [read] = await socketReads(page, `${AGENT}/board`, from);
   expect(read?.same).toBeUndefined();
 });
+
+test("a board closed during a reopen opens again over the socket with no answer when it did not change", async ({ page }) => {
+  await page.addInitScript(WRAP);
+  const reads: string[] = [];
+  page.on("request", r => {
+    const path = new URL(r.url()).pathname;
+    if (r.method() === "GET" && (path === `${AGENT}/board` || path === `${AGENT}/duties`)) reads.push(path);
+  });
+  await page.goto(`/#/board/${HARNESS_AGENT}`);
+  await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime", { timeout: 20_000 });
+  await page.waitForLoadState("networkidle");
+  await page.evaluate(() => { location.hash = "#/c/ch_general"; });
+  await expect(page.getByRole("region", { name: "Duties" })).toBeHidden();
+  await reopen(page);
+  await page.waitForTimeout(1_000);
+  const before = reads.length;
+  const from = (await frames(page)).length;
+  await page.evaluate(hash => { location.hash = hash; }, `#/board/${HARNESS_AGENT}`);
+  await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime");
+  await expect.poll(async () => (await socketReads(page, `${AGENT}/board`, from)).filter(read => "same" in read || "value" in read)).toHaveLength(1);
+  await page.waitForTimeout(500);
+  expect(reads.slice(before)).toEqual([]);
+  for (const path of [`${AGENT}/board`, `${AGENT}/duties`]) {
+    const [read] = await socketReads(page, path, from);
+    expect(read?.same, path).toBe(true);
+  }
+});

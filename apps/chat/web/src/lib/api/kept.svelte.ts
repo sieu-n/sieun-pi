@@ -149,10 +149,16 @@ export class Kept<T> {
    * A `live` read the socket kept current since its last answer reads nothing: its events brought every change. On 11-28 each open of
    * #sw-factory-build read agent factory's board again, 122 KB with br, and its duties, 21 KB; 50 board and duties refreshes that day
    * came back unchanged, and his read mark waited 1.5 to 1.9 s behind their bytes on 5 of 5 opens (~/work/p155-own-waits/summary.md).
+   *
+   * A `live` read the page keeps whose events the socket may have missed, one the last load kept or one read before the socket opened
+   * again, reads over the socket with the kept answer's tag, so an unchanged one comes back with no body. In a walk of live :5184 on 11-28
+   * (p324 r3, WebKit) an open of #1124-cost-management after a reconnect read three agents' boards and duties again over HTTP, about
+   * 130 KB with br, and the six reads took 0.7 to 1.1 s on the network (~/work/p155-own-waits/summary.md).
    */
   open(): () => void {
     this.views += 1;
-    if (!(this.of.live && this.current)) untrack(() => void this.read());
+    if (this.of.live && this.value !== null && !this.current && !this.flight && live.connected) untrack(() => this.readOverSocket());
+    else if (!(this.of.live && this.current)) untrack(() => void this.read());
     return () => void (this.views -= 1);
   }
 
