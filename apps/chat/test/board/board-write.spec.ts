@@ -135,10 +135,9 @@ test("a refresh of a board the page built from a write's answer counts as no wai
   holding = true;
   await answer(page, region);
   const lines = await linesFromNow(page);
-  await page.evaluate(() => { location.hash = "#/agents"; });
-  await expect(page.locator('[role="gridcell"]').first()).toBeVisible();
+  // A reopen in the same load reads no board the socket kept current (kept.svelte.ts `open`), so a reload's open refreshes the kept board.
   const read = page.waitForResponse(r => r.request().method() === "GET" && new URL(r.url()).pathname === `/api/agents/${HARNESS_AGENT}/board`);
-  await page.evaluate(hash => { location.hash = hash; }, `#/board/${HARNESS_AGENT}`);
+  await page.reload();
   await read;
   await page.waitForTimeout(500);
   const board = (await lines()).filter(line => line.m === "GET" && line.p === `/api/agents/${HARNESS_AGENT}/board`).map(line => line.bg ?? "waited");

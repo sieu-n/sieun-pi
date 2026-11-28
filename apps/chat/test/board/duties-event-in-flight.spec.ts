@@ -15,8 +15,6 @@ test("a duties event that comes while a read of the duties is on its way stays o
   await page.goto(`/#/board/${HARNESS_AGENT}`);
   const toggle = page.getByRole("region", { name: "Duties" }).getByRole("switch", { name: "Relay uptime on" });
   await expect(toggle).toBeChecked({ timeout: 30_000 });
-  await page.evaluate(() => { location.hash = "#/agents"; });
-  await expect(page.getByRole("region", { name: "Duties" })).toBeHidden();
 
   // The next read of the duties gets the rows as they are now, and its answer is held until the pause's event reached the page.
   let release!: () => void;
@@ -33,7 +31,8 @@ test("a duties event that comes while a read of the duties is on its way stays o
     await route.fulfill({ status: before.status(), headers: before.headers(), body });
     answered();
   });
-  await page.evaluate(hash => { location.hash = hash; }, `#/board/${HARNESS_AGENT}`);
+  // A reopen in the same load reads no duties the socket kept current (kept.svelte.ts `open`), so a reload's open reads them.
+  await page.reload();
   await expect.poll(() => asked).toBe(true);
 
   await request.post(`${chatServer}${DUTIES}`, { data: { duty: "d1", action: "pause" } });
