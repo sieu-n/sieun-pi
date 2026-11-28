@@ -146,15 +146,17 @@ def codex_models(headers):
     return [s for s in slugs if isinstance(s, str)] or None
 
 
-def read_account(provider, account, cfg):
+def read_account(provider, account, cfg, manual=False):
     """Read one account's usage and save it in the index. Returns
-    {"ok": True, "usage_at"} or {"ok": False, "reason", "retry_at"}."""
+    {"ok": True, "usage_at"} or {"ok": False, "reason", "retry_at"}. A `manual` read, which a person asked for,
+    sends the request even while a rate limit the endpoint set earlier runs (owner, #sw-factory-build p249, 11-28:
+    "don't reject this manual refreshes"), and logs one `usage_manual_read` line with the time it was sent."""
     now = time.time()
     record = next((r for r in base.read_index(provider)["accounts"] if r["id"] == account.id), None)
     if record is None:
         return {"ok": False, "reason": "the account left the pool", "retry_at": None}
     retry_at = (record.get("usageRetryAt") or 0) / 1000
-    if retry_at > now:
+    if retry_at > now and not manual:
         return {"ok": False, "reason": f"the usage endpoint rate limited this account, next read in "
                                        f"{max(1, round((retry_at - now) / 60))}m", "retry_at": round(retry_at)}
     started = int(now * 1000)
@@ -193,13 +195,16 @@ def read_account(provider, account, cfg):
             rec["lastProbeAt"] = started
             return True
         outcome = {"ok": False, "reason": str(e)[:200], "retry_at": None}
+    if manual:
+        base.log("usage_manual_read", provider=provider, account=account.label, sent_at=round(started / 1000, 1),
+                 ok=outcome["ok"], reason=outcome.get("reason"), retry_at=outcome.get("retry_at"))
     with base.index_lock(provider):
         if not base.update_account(provider, account.id, change):
             return {"ok": False, "reason": "the account left the pool during the read", "retry_at": None}
     return outcome
 
 
-def read_many(selection, emit, timeout=registry.REFRESH_TIMEOUT_SEC):
+def read_many(selection, emit, timeout=registry.REFRESH_TIMEOUT_SEC, manual=False):
     """Read the accounts of `selection` ({provider: ids or None for all}), READERS at a
     time, and pass each event to `emit`: accounts, reading, read, error. An account
     still unread at the deadline is reported as not finished. Returns the providers
@@ -236,7 +241,7 @@ def read_many(selection, emit, timeout=registry.REFRESH_TIMEOUT_SEC):
                 continue
             say({"event": "reading", "provider": provider, "id": a.id, "email": a.email, "label": a.label})
             try:
-                result = read_account(provider, a, cfg)
+                result = read_account(provider, a, cfg, manual)
             except Exception as e:
                 result = {"ok": False, "reason": str(e)[:200], "retry_at": None}
             with lock:

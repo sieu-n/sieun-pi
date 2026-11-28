@@ -232,25 +232,10 @@ def reset_rows(accounts):
     return out
 
 
-def cmd_resets(rest):
-    """Read every Claude account's banked resets now (or the named ones), save
-    them for `ls --json`, and print them. A read spends nothing."""
-    f = status_view.parse_flags(rest)
-    if f["provider"] != "anthropic":
-        print(json.dumps({"error": "only Claude accounts have resets"}) if f["json"] else "only Claude accounts have resets")
-        return 1
-    accounts = registry.load_index("anthropic")
-    if f["positional"]:
-        chosen = []
-        for sel in f["positional"]:
-            a = registry.find_account(accounts, sel)
-            if a is None:
-                print(json.dumps({"error": f"{sel} is not in the anthropic pool"}) if f["json"] else f"{sel} is not in the anthropic pool")
-                return 1
-            chosen.append(a)
-        accounts = chosen
-    cfg = base.config()
-
+def check_resets(accounts, cfg):
+    """Read these Claude accounts' banked resets from Anthropic now and save each answer for `ls --json`.
+    Returns [(account, entry)]. `checked_at` is when the check ran, also for a failed one, which keeps the
+    last good grants and notes the failure next to them."""
     def read(a):
         entry = {"checked_at": round(time.time())}
         if a.needs_reauth:
@@ -268,13 +253,33 @@ def cmd_resets(rest):
         results = list(pool.map(read, accounts))
     for a, entry in results:
         if "error" in entry:
-            # A failed read keeps the last good grants and notes the failure next to them.
             with limited.pool_lock():
                 cache = base.load_json(RESETS, {}) or {}
-                cache[a.id] = {**(cache.get(a.id) or {}), "error": entry["error"], "error_at": entry["checked_at"]}
+                cache[a.id] = {**(cache.get(a.id) or {}), "checked_at": entry["checked_at"],
+                               "error": entry["error"], "error_at": entry["checked_at"]}
                 base.save_json(RESETS, cache)
     base.log("resets_read", accounts=[a.label for a, _ in results], failed=[a.label for a, e in results if "error" in e])
-    rows = [{"id": a.id, "email": a.email, "label": a.label, **e} for a, e in results]
+    return results
+
+
+def cmd_resets(rest):
+    """Read every Claude account's banked resets now (or the named ones), save
+    them for `ls --json`, and print them. A read spends nothing."""
+    f = status_view.parse_flags(rest)
+    if f["provider"] != "anthropic":
+        print(json.dumps({"error": "only Claude accounts have resets"}) if f["json"] else "only Claude accounts have resets")
+        return 1
+    accounts = registry.load_index("anthropic")
+    if f["positional"]:
+        chosen = []
+        for sel in f["positional"]:
+            a = registry.find_account(accounts, sel)
+            if a is None:
+                print(json.dumps({"error": f"{sel} is not in the anthropic pool"}) if f["json"] else f"{sel} is not in the anthropic pool")
+                return 1
+            chosen.append(a)
+        accounts = chosen
+    rows = [{"id": a.id, "email": a.email, "label": a.label, **e} for a, e in check_resets(accounts, base.config())]
     if f["json"]:
         print(json.dumps({"accounts": rows}, indent=2))
         return 0

@@ -971,7 +971,7 @@ def start_usage_read(provider, accounts):
     """`pi-pool refresh` these accounts in its own session, detached from the hook's
     pipes, so the hook returns its token at once and the read outlives it."""
     subprocess.Popen([sys.executable, "-B", os.path.join(base.CODE_ROOT, "vend.py"), "--cli", "refresh",
-                      *(a.id for a in accounts), "--provider", provider, "--json"],
+                      *(a.id for a in accounts), "--provider", provider, "--json", "--background"],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
     base.log("usage_read", provider=provider, accounts=[a.label for a in accounts])

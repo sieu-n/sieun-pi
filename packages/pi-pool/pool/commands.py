@@ -1,7 +1,7 @@
 """pin, unpin, switch, config, set, log, use, priority, and the usage refresh."""
 import json, os, sys, time
 
-from . import base, registry, sched, usage, vending, status_view, limited
+from . import base, registry, sched, usage, vending, status_view, limited, limit_resets
 
 
 def cmd_pin(rest):
@@ -229,13 +229,17 @@ def cmd_priority(rest):
 
 def cmd_refresh(rest):
     """Read usage now for every account, or for the named ones (pool/usage.py).
-    It skips no account for having been read recently, but it waits out a rate
-    limit the usage endpoint set. It writes only the index's usage figures and
-    moves no session or pin.
+    It skips no account for having been read recently and sends each read even
+    while a rate limit the usage endpoint set earlier runs, then checks the banked
+    resets of the Claude accounts it read (owner, #sw-factory-build p249, 11-28:
+    "don't reject this manual refreshes"). --background, which the hook's read of
+    an unsampled account passes, waits out that rate limit and checks no resets.
+    It writes only the index's usage figures and the reset cache and moves no
+    session or pin.
     --stream prints each event as one JSON line while the reads run; --json
     prints one report at the end. Never prints a credential."""
-    stream = "--stream" in rest
-    f = status_view.parse_flags([tok for tok in rest if tok != "--stream"], provider_default=None)
+    stream, background = "--stream" in rest, "--background" in rest
+    f = status_view.parse_flags([tok for tok in rest if tok not in ("--stream", "--background")], provider_default=None)
     as_json = f["json"] or stream
 
     def fail(msg):
@@ -273,7 +277,10 @@ def cmd_refresh(rest):
         elif not as_json and event.get("event") == "read":
             print(f"{event['provider']:14s} {event.get('label') or event.get('id')}  {'read' if event.get('ok') else event.get('reason')}", flush=True)
 
-    errors = usage.read_many(selection, emit)
+    errors = usage.read_many(selection, emit, manual=not background)
+    read_ids = {r["id"] for r in rows.get("anthropic", [])}
+    if not background and read_ids:
+        limit_resets.check_resets([a for a in registry.load_index("anthropic") if a.id in read_ids], base.config())
     failed = [r["label"] or r["id"] for provider_rows in rows.values() for r in provider_rows if not r["ok"]]
     base.log("usage_refresh", providers=list(selection), accounts=sum(len(r) for r in rows.values()), failed=failed, errors=errors)
     for provider, provider_rows in rows.items():

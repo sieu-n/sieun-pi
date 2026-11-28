@@ -142,6 +142,16 @@ class ResetClaims(unittest.TestCase):
         self.assertEqual((code, out["result"]), (0, "reset"))
         self.assertNotEqual(self.posts[0]["request_id"], self.posts[1]["request_id"])
 
+    def test_a_failed_check_records_when_it_ran_and_keeps_the_last_grants(self):
+        base.save_json(limit_resets.RESETS, {"acc-1": {"checked_at": 1, "status": {"eligible": True, "grants": []}}})
+        with unittest.mock.patch.object(limit_resets, "anthropic_call", lambda *a, **k: (429, None)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            limit_resets.cmd_resets(["a@x", "--json"])
+        entry = base.load_json(limit_resets.RESETS, {})["acc-1"]
+        self.assertAlmostEqual(entry["checked_at"], time.time(), delta=5)
+        self.assertEqual((entry["error_at"], entry["status"]), (entry["checked_at"], {"eligible": True, "grants": []}))
+        self.assertTrue(entry["error"])
+
     def test_a_blocked_grant_sends_nothing(self):
         self.left = 0
         code, out = self.reset()

@@ -5,7 +5,7 @@ import base64, contextlib, io, json, os, tempfile, threading, time, unittest, un
 
 from fixture_isolation import isolate_test_module
 import test_core  # noqa: F401  (loads vend.py with an isolated pool folder)
-from vend.pool import base, commands, registry, sched, usage, vending
+from vend.pool import base, commands, limit_resets, registry, sched, usage, vending
 
 
 def setUpModule():
@@ -111,6 +111,20 @@ class ClaudeReads(Store):
         self.assertIn("rate limited", out["reason"])
         self.assertAlmostEqual(out["retry_at"], time.time() + 600, delta=5)
 
+    def test_a_manual_read_is_sent_while_a_rate_limit_runs_and_lands_the_answer(self):
+        account = next(a for a in registry.load_index("anthropic") if a.id == "a")
+        self.bodies["token-a"] = usage.RateLimited(time.time() + 3600)
+        self.read("anthropic", "a")
+        self.bodies["token-a"] = usage.RateLimited(time.time() + 464)
+        out = usage.read_account("anthropic", account, base.config(), manual=True)
+        self.assertEqual((out["ok"], out["retry_at"]), (False, round(time.time() + 464)))
+        self.assertAlmostEqual(self.record("anthropic", "a")["usageRetryAt"] / 1000, time.time() + 464, delta=5)
+        self.bodies["token-a"] = CLAUDE
+        self.assertTrue(usage.read_account("anthropic", account, base.config(), manual=True)["ok"])
+        rec = self.record("anthropic", "a")
+        self.assertNotIn("usageRetryAt", rec)
+        self.assertAlmostEqual(rec["lastUsageAt"] / 1000, time.time(), delta=5)
+
     def test_a_model_row_missing_from_a_later_body_is_kept(self):
         self.bodies["token-a"] = CLAUDE
         self.read("anthropic", "a")
@@ -139,6 +153,14 @@ class CodexReads(Store):
 
 
 class Refresh(Store):
+    def setUp(self):
+        super().setUp()
+        self.checked = []
+        patch = unittest.mock.patch.object(limit_resets, "check_resets",
+                                           lambda accounts, cfg: self.checked.append(sorted(a.id for a in accounts)))
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def run_refresh(self, *args):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -168,6 +190,30 @@ class Refresh(Store):
         self.assertEqual(code, 0)
         self.assertEqual(sorted(r["id"] for r in report["anthropic"]), ["a", "b"])
         self.assertTrue(all(r["ok"] for rows in report.values() for r in rows))
+
+    def test_a_refresh_reads_through_a_rate_limit_and_checks_the_resets_of_what_it_read(self):
+        self.bodies["token-a"] = usage.RateLimited(time.time() + 3600)
+        self.read("anthropic", "a")
+        self.bodies["token-a"] = CLAUDE
+        code, out = self.run_refresh("--json", "--provider", "anthropic", "a@x")
+        self.assertEqual((code, [r["ok"] for r in json.loads(out)["providers"]["anthropic"]]), (0, [True]))
+        self.assertNotIn("usageRetryAt", self.record("anthropic", "a"))
+        self.assertEqual(self.checked, [["a"]])
+
+    def test_a_background_refresh_waits_out_the_rate_limit_and_checks_no_resets(self):
+        self.bodies["token-a"] = usage.RateLimited(time.time() + 3600)
+        self.read("anthropic", "a")
+        self.bodies["token-a"] = CLAUDE
+        code, out = self.run_refresh("--json", "--background", "--provider", "anthropic", "a@x")
+        row = json.loads(out)["providers"]["anthropic"][0]
+        self.assertEqual((row["ok"], self.checked), (False, []))
+        self.assertIn("usageRetryAt", self.record("anthropic", "a"))
+
+    def test_the_hooks_read_of_an_unsampled_account_runs_in_the_background(self):
+        account = next(a for a in registry.load_index("anthropic") if a.id == "a")
+        with unittest.mock.patch.object(vending.subprocess, "Popen") as popen:
+            vending.start_usage_read("anthropic", [account])
+        self.assertIn("--background", popen.call_args.args[0])
 
     def test_named_accounts_need_a_provider(self):
         code, out = self.run_refresh("--json", "a@x")
