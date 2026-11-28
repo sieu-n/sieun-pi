@@ -12,7 +12,7 @@
  * more, with an example and how it fits the asker's product, p97), "checklist" (one post whose first version is the answer or one plain line with no open `- [ ]` steps, c234, which a later edit may fill in), "natural" (a
  * post that opens with a natural sentence, then bullets with no bare topic labels, ticks any open task by an edit, states a pick before any
  * question, p54, and puts its answer on its own first line with no 3-sentence wall, p57; natural-checks.mjs), "lookup" (a slow look-up whose
- * first post holds a fact or waits for the answer, c104), "line" (one short line with
+ * first post says what the agent understood and any fact it holds, c104 and c224), "line" (one short line with
  * no bullets) or "reaction" (no post). An ask with `room: "dm"` goes to the agent's DM as a root post instead of the channel. `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
@@ -93,11 +93,21 @@ const NATURAL_ASKS = [
 /**
  * An ask whose answer takes a slow look-up of a few minutes, so the comm thread hands it over. The owner called a first reply that promised
  * its result slop on 11-25 (#1124-cost-management p21, msg mww1eid8, c104), after p17 ended "Calls per customer per day, with the success
- * rate, are coming here next.". A pass has no post or edit that promises a result: the first post holds a fact or waits for the answer.
+ * rate, are coming here next.". A pass has no post or edit that promises a result. From 11-25 to 11-28 a pass could also wait for the
+ * answer with no first post, and comm threads then left his posts with only 👀 for 14 and 21 min (c224), so a pass now has a first post
+ * within `FIRST_POST_S`.
  */
 const PROMISE_ASKS = [
   { text: "how well do symphony's elixir tests cover its code? for each module under lib/, how many test cases exercise it, and which modules have none? sort the uncovered ones by line count", expect: "lookup" },
 ];
+/**
+ * How long after the agent's first reaction or post its first post may come on an ask it hands over ("lookup" and "natural"). The owner
+ * asked for a reply within about a minute (ch_30b50688/p4, c224: "이런 메시지 보면 일단 일차적으로 보고 ~1분 안에 알겠다고 답장해"). The clock starts at
+ * the agent's first sign, since a wait for a model account before the turn is not the agent's (11 of the 20 posts that waited over 3 min
+ * from 11-25 to 11-28, ~/work/first-reply/measure.md). 180 s is the limit of agent factory's d1 metric, and all 9 comm turns that ran and
+ * posted nothing in those days had ended 11 to 120 s after his post, so a turn that posts has posted by then.
+ */
+const FIRST_POST_S = 180;
 const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, options: OPTIONS_ASKS, checklist: CHECKLIST_ASKS, natural: NATURAL_ASKS, promise: PROMISE_ASKS };
 /** A set's own project when no --cwd is given, so the owner-style duty, which passes none, runs natural and promise at the read-only clone too. */
 const SET_CWD = { natural: join(homedir(), "code/symphony"), promise: join(homedir(), "code/symphony") };
@@ -145,8 +155,9 @@ const FITS = /\b(for us|we could|we can|we'd|our|your (app|team|todo|users)|you'
 const blocks = text => text.split(/\n(?=\S)|\n\s*\n/).map(block => block.trim()).filter(Boolean);
 
 /** The ideal replies page's rules that a script can read; the reader judges the tone from the printed text. */
-function checks(ask, posts, asked, versions = new Map()) {
+function checks(ask, posts, asked, versions = new Map(), timing = {}) {
   const text = posts.map(p => p.text).join("\n\n");
+  const prompt = [`a first post within ${FIRST_POST_S} s of the agent's first reaction or post (c224)`, timing.post !== undefined && timing.post - (timing.sign ?? timing.post) <= FIRST_POST_S];
   if (ask.expect === "reaction") return [["no post, a reaction says it", posts.length === 0]];
   const lines = text.split("\n").filter(line => line.trim());
   const every = posts.flatMap(p => versions.get(p.id) ?? [p.text]);
@@ -210,11 +221,12 @@ function checks(ask, posts, asked, versions = new Map()) {
       ["at most 120 words outside the table", words(prose) <= 120],
     ];
   }
-  if (ask.expect === "natural") return [...plain, ...naturalChecks(posts.map(p => versions.get(p.id) ?? [p.text]))];
+  if (ask.expect === "natural") return [...plain, prompt, ...naturalChecks(posts.map(p => versions.get(p.id) ?? [p.text]))];
   if (ask.expect === "lookup") {
     const first = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text])[0] : "";
     return [
       ...plain,
+      prompt,
       ["the first version opens with a natural sentence", naturalLine((first.split("\n").find(line => line.trim()) ?? "").trim())],
       ["the first version narrates no plan of the agent's own", !narrates(first)],
       ["the answer gives counts", /\d/.test(text)],
@@ -274,6 +286,8 @@ for (const [index, ask] of asks.entries()) {
   /** Whether the agent reacted to a post of this ask, and when it first posted or reacted, which shows its model answered. */
   let reacted = false;
   let first;
+  /** When the agent's first post came, apart from its first reaction, in seconds after the ask. */
+  let firstPost;
   /** Every text each answer post had, in order, so a checklist's first version and its edits can be checked. */
   const versions = new Map();
   const edited = ask.expect === "checklist" || ask.expect === "natural" || ask.expect === "lookup";
@@ -295,6 +309,7 @@ for (const [index, ask] of asks.entries()) {
     posts = now;
     reacted = [thread.root, ...thread.items].some(i => i && ids.has(i.id) && i.reactions?.some(r => r.by.some(b => b.id === agent.id)));
     if (posts.length || reacted) first ??= Math.round((Date.now() - started) / 1000);
+    if (posts.length) firstPost ??= Math.round((Date.now() - started) / 1000);
     const open = edited && posts.some(post => /^\s*[-*+] \[ \] /m.test(post.text));
     // A look-up's first post may be a fact while its work still runs, and the agent's 👀 on the ask shows that work until the answer is in.
     const eyes = ask.expect === "lookup" && [thread.root, ...thread.items].some(i => i && ids.has(i.id) && i.reactions?.some(r => r.emoji === "👀" && r.by.some(b => b.id === agent.id)));
@@ -305,11 +320,11 @@ for (const [index, ask] of asks.entries()) {
     if (Date.now() - started > (ask.expect === "natural" || ask.expect === "lookup" ? 3 * FIRST_MS : edited ? 2 * FIRST_MS : FIRST_MS)) break;
   }
   const text = group.map(g => g.text).join(" / ");
-  const result = checks(ask, posts, group.length, versions);
+  const result = checks(ask, posts, group.length, versions, { sign: first, post: firstPost });
   // An ask that wants a reply and got no post and no reaction is not measured; a thanks that got neither is a pass, as before.
   const unanswered = first === undefined && ask.expect !== "reaction";
   if (unanswered) starved = true;
-  const line = { ask: text, askIds: [...ids], room: dm ? agent.room : room.id, expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), ...(first === undefined ? {} : { first }), replies: posts.map(p => p.text), versions: posts.map(p => versions.get(p.id) ?? [p.text]), checks: Object.fromEntries(result), pass: !unanswered && result.every(([, ok]) => ok), ...(unanswered ? { unanswered: true } : {}) };
+  const line = { ask: text, askIds: [...ids], room: dm ? agent.room : room.id, expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), ...(first === undefined ? {} : { first }), ...(firstPost === undefined ? {} : { firstPost }), replies: posts.map(p => p.text), versions: posts.map(p => versions.get(p.id) ?? [p.text]), checks: Object.fromEntries(result), pass: !unanswered && result.every(([, ok]) => ok), ...(unanswered ? { unanswered: true } : {}) };
   console.log(`\n${unanswered ? "NOT MEASURED" : line.pass ? "PASS" : "FAIL"} ${text}\n${posts.map(p => `  > ${p.text.replace(/\n/g, "\n    ")}`).join("\n") || "  (no post)"}\n  ${unanswered ? `no post and no reaction within ${line.seconds} s` : result.filter(([, ok]) => !ok).map(([name]) => `failed: ${name}`).join(", ")}`);
   write(line);
   group = [];

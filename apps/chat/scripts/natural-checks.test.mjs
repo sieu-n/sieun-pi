@@ -79,8 +79,9 @@ test("a question passes only with the agent's pick before or with it", () => {
 const ALL_CLEAR = "All clear to ship.\n\n- Local main matches origin/main after a fresh fetch, with nothing ahead or behind.\n- 7 tracked files have uncommitted edits, 6 in `apps/chat/web` plus `scripts/skills_usage.py`. There are also 8 untracked paths, such as `.scratch/` and a stray file named `{kind:`.\n- The comm-guard test passes 7 of 7.\n- No TODO is left in `packages/pi-host/src/durable`.";
 
 test("a short answer in a plain sentence is a natural opening, and a title, a progress line or an ack is not", () => {
-  for (const line of ["All clear to ship.", "Yes, it's on main.", "yes, all three are running.", "Not yet.", "No, two are red.", "Three of the four are clear, but 15 files are uncommitted, so I'd check those before you ship.", "Yes to three of them, but the tree isn't clean."]) assert.ok(naturalLine(line), line);
-  for (const line of ["four pre-ship checks", "Four pre-ship checks.", "Repo status.", "checking all four now", "Checking all four now.", "checking now", "On it.", "Working on it.", "Options:", "The others:", "Plan: three steps to ship it", "Done", "- git"]) assert.ok(!naturalLine(line), line);
+  for (const line of ["All clear to ship.", "Yes, it's on main.", "yes, all three are running.", "Not yet.", "No, two are red.", "Three of the four are clear, but 15 files are uncommitted, so I'd check those before you ship.", "Yes to three of them, but the tree isn't clean.",
+    "got it, a Fable advisor that reviews and talks to you, while Opus keeps doing the work.", "Makes sense, Accounts moves into a tab under Settings and leaves the top bar."]) assert.ok(naturalLine(line), line);
+  for (const line of ["four pre-ship checks", "Four pre-ship checks.", "Repo status.", "checking all four now", "Checking all four now.", "checking now", "On it.", "Working on it.", "Got it.", "got it", "Options:", "The others:", "Plan: three steps to ship it", "Done", "- git"]) assert.ok(!naturalLine(line), line);
 });
 
 test("an answer line that calls all clear over a count of uncommitted files overstates, and one that names them does not", () => {

@@ -52,8 +52,10 @@ const shortAnswer = line => words(line) >= 2 && /[.!?]$/.test(line) && (VERB.tes
  * three are running." opens the post he praised and "Yes, it's on main." answers a quick ask: it passes when it ends as a sentence and
  * says a verb or a verdict. On 11-23 the 17:41 KST checklist run opened "All clear to ship." and failed here for its 4 words alone. A
  * title such as "four pre-ship checks" and a progress line such as "checking all four now", both from 11-20 runs, still fail.
+ * A bare "Got it." fails, and "got it, <what he wants>" passes: the role text's good first reply (dm_agent-factory p73) opens that way, and
+ * c224 asks for a reply that says the agent got it.
  */
-export const naturalLine = line => !BULLET.test(line) && (words(line) >= 5 ? VERB.test(line) : shortAnswer(line)) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*(?:on it|working on it|got it)\b/i.test(line);
+export const naturalLine = line => !BULLET.test(line) && (words(line) >= 5 ? VERB.test(line) : shortAnswer(line)) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*(?:on it|working on it)\b/i.test(line) && !/^\W*got it\W*$/i.test(line);
 /**
  * Whether a post's first line calls everything clear while a line under it counts uncommitted files, as the 17:41 KST checklist run of
  * 11-23 did: "All clear to ship." over "7 tracked files have uncommitted edits ... There are also 8 untracked paths". The other 6

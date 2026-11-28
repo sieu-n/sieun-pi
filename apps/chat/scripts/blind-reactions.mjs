@@ -15,6 +15,8 @@
  * 4. No agent post has ✅ or 👀 in its text outside code, unless it names the reaction ("my 👀 reaction on p1"), ends on a sign-off emoji, or
  *    pastes a raw JSON or log line. On 11-21 a fresh agent, asked where a room's posts lived, gave "a `set` line patches a post later, like my
  *    👀 reaction on p1" as its example, which uses no emoji as a status mark.
+ * 5. The task gets its first post within `FIRST_POST_S` of the agent's first reaction or post on it, since 👀 alone is no first reply (owner,
+ *    ch_30b50688/p4, c224: "이런 메시지 보면 일단 일차적으로 보고 ~1분 안에 알겠다고 답장해").
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
  * it on and take it off between two polls.
  *
@@ -33,6 +35,12 @@ const QUESTION_MS = 15 * 60_000;
 const THANKS_QUIET_MS = 90_000;
 const THANKS_MS = 6 * 60_000;
 const POLL_MS = 1_500;
+/**
+ * The limit of blind-replies.mjs and of agent factory's d1 metric: from 11-25 to 11-28 each of the 9 comm turns that ran and posted nothing
+ * had ended 11 to 120 s after his post (~/work/first-reply/measure.md). The clock starts at the agent's first sign, so a wait for a model
+ * account before its turn does not count.
+ */
+const FIRST_POST_S = 180;
 const EYES = "👀";
 /**
  * Whether a post uses ✅ or 👀 as a status mark outside code, as in "yes, all pass ✅". A post may name the reaction as a thing: "my 👀
@@ -128,10 +136,14 @@ async function runRoom(kind) {
   if (kind !== "dm") channels.push(room);
   console.log(`\n${kind} ${room}`);
   const seen = new Map();
+  /** The task post, and when a poll first saw the agent's 👀 or a post on it. */
+  let task;
+  let taskSign;
   const send = async (text, key, threadRoot) => (await call("POST", `/api/c/${room}/send`, { text, requestId: `blind-rx-${stamp}-${kind}-${key}`, ...(threadRoot ? { threadRoot } : {}) })).item;
   const poll = async () => {
     const posts = await allPosts(room, kind);
     for (const p of posts) if (mine(p, EYES)) seen.set(p.id, true);
+    if (task && taskSign === undefined && (seen.has(task.id) || answersOf(posts, task.id).length)) taskSign = Date.now();
     return posts;
   };
   const answersOf = (posts, id) => posts.filter(p => p.author?.id === agent.id && p.answers === id);
@@ -145,7 +157,7 @@ async function runRoom(kind) {
   };
 
   const started = Date.now();
-  const task = await send(TASK, "task");
+  task = await send(TASK, "task");
   await waitFor(90_000, posts => seen.has(task.id) || answersOf(posts, task.id).length > 0);
   const question = await send(QUESTION, "question");
   const questionAt = Date.now();
@@ -185,9 +197,12 @@ async function runRoom(kind) {
     ];
   };
   const afterThanks = posts.filter(p => p.author?.id === agent.id && p.seq > thanks.seq);
+  const taskFirst = Math.min(...answersOf(posts, task.id).map(p => p.at));
+  const taskFirstSeconds = taskSign === undefined || !Number.isFinite(taskFirst) ? undefined : Math.max(0, Math.round((taskFirst - taskSign) / 1000));
   const checks = [
     ...replyChecks(question, "the question", false),
     ...replyChecks(task, "the task", true),
+    [`the task got its first post within ${FIRST_POST_S} s of the agent's first reaction or post (c224)`, taskFirstSeconds !== undefined && taskFirstSeconds <= FIRST_POST_S],
     ["ok thanks got one reaction", agentReactions(byId(thanks.id)).length === 1],
     ["ok thanks got no post", afterThanks.length === 0],
     ...(kind === "channel" ? [["no agent post is a root post", posts.every(p => p.author?.id !== agent.id || p.threadRoot)]] : []),
@@ -200,7 +215,7 @@ async function runRoom(kind) {
   const unanswered = posts.every(p => p.author?.id !== agent.id && !agentReactions(p).length);
   const line = {
     ask: `${kind}: a task, a question while it runs, then ok thanks`, unanswered,
-    room, kind, agent: agent.id, questionSeconds, taskSeconds,
+    room, kind, agent: agent.id, questionSeconds, taskSeconds, ...(taskFirstSeconds === undefined ? {} : { taskFirstSeconds }),
     posts: posts.map(p => ({ id: p.id, author: p.author?.id === agent.id ? "agent" : "owner", threadRoot: p.threadRoot, answers: p.answers, reactions: (p.reactions ?? []).map(r => `${r.emoji} ${r.by.map(b => b.name).join(",")}`), text: p.text })),
     emojiCalls: calls, checks: Object.fromEntries(checks), pass: checks.every(([, ok]) => ok),
   };
