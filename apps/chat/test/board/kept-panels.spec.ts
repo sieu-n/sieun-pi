@@ -12,16 +12,45 @@ const held = /\/api\/(agents|threads)\/[^/]+\/(board|duties|check-in|agents|conf
 /** The reads the socket keeps current with its board and duties events, whose open reads nothing while it stays open. */
 const live = ["board", "duties"].map((name) => `${AGENT}/${name}`);
 const settle = (page: import("@playwright/test").Page) => page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+/**
+ * The answers the page's reads over the live socket got, by path, as JSON text: a board or duties read ahead goes there while a socket is
+ * open (kept.svelte.ts), so his calls on WebKit's one HTTP connection wait behind no big answer.
+ */
+function socketAnswers(page: import("@playwright/test").Page): Map<string, string[]> {
+  const paths = new Map<number, string>(), answers = new Map<string, string[]>();
+  page.on("websocket", (ws) => {
+    ws.on("framesent", ({ payload }) => {
+      const command = JSON.parse(String(payload)) as { type: string; id: number; path: string };
+      if (command.type === "read") paths.set(command.id, command.path);
+    });
+    ws.on("framereceived", ({ payload }) => {
+      const text = String(payload);
+      if (!text.startsWith('{"type":"answer"')) return;
+      const answer = JSON.parse(text) as { id: number; value?: unknown; same?: true };
+      const path = paths.get(answer.id);
+      if (path) answers.set(path, [...(answers.get(path) ?? []), answer.same ? "same" : JSON.stringify(answer.value)]);
+    });
+  });
+  return answers;
+}
+/** The answer of `path`'s first read, over HTTP or over the socket, whichever came. */
+const firstAnswer = (page: import("@playwright/test").Page, socket: Map<string, string[]>, path: string): Promise<string> => Promise.race([
+  page.waitForResponse((r) => new URL(r.url()).pathname === path, { timeout: 20_000 }).then((r) => r.text()).then((text) => JSON.stringify(JSON.parse(text))),
+  expect.poll(() => socket.get(path)?.length ?? 0, { timeout: 20_000 }).toBeGreaterThan(0).then(() => socket.get(path)![0]!),
+]);
 
 // Other board specs on this worker's server answer t1 and pause duties, so each test starts from the seed.
 test.beforeEach(async ({ request, chatServer }) => { await resetFixture(request, chatServer); });
 
 test("an agent's page and its board with duties and check-in show with no call in front of them", async ({ page }) => {
-  const ahead = Promise.all(panelReads.map((path) => page.waitForResponse((r) => new URL(r.url()).pathname === path, { timeout: 20_000 })));
+  const socket = socketAnswers(page);
+  // The board and duties go ahead over the socket, or come kept current by its events with no read at all.
+  const ahead = Promise.all(panelReads.filter((path) => !live.includes(path)).map((path) => firstAnswer(page, socket, path)));
   await page.goto("/#/agents");
   await ahead;
+  await page.waitForLoadState("networkidle");
   // The answers are in; one more turn of the page's loop keeps them.
-  await settle(page);
+  await page.waitForTimeout(1_000);
 
   const asked: string[] = [];
   await page.route(held, (route) => {
@@ -54,13 +83,15 @@ test("a panel read ahead and its unchanged refresh are logged as background", as
   page.on("request", (r) => {
     if (r.method() === "POST" && new URL(r.url()).pathname === "/api/timings") samples.push(...(r.postDataJSON() as { samples: typeof samples }).samples);
   });
-  const reads = panelReads.filter((path) => !path.endsWith("/config"));
-  const answer = (path: string) => page.waitForResponse((r) => new URL(r.url()).pathname === path, { timeout: 20_000 }).then((r) => r.text());
-  const ahead = Promise.all(reads.map(answer));
+  const reads = panelReads.filter((path) => !path.endsWith("/config") && !live.includes(path));
+  const socket = socketAnswers(page);
+  const answer = (path: string) => page.waitForResponse((r) => new URL(r.url()).pathname === path, { timeout: 20_000 }).then((r) => r.text()).then((text) => JSON.stringify(JSON.parse(text)));
+  const ahead = Promise.all(reads.map((path) => firstAnswer(page, socket, path)));
   await page.goto("/#/agents");
   const before = await ahead;
+  await page.waitForLoadState("networkidle");
   await settle(page);
-  const refreshed = Promise.all(reads.map((path) => (live.includes(path) ? Promise.resolve(before[reads.indexOf(path)]!) : answer(path))));
+  const refreshed = Promise.all(reads.map(answer));
   await page.evaluate((hash) => { location.hash = hash; }, `#/board/${HARNESS_AGENT}`);
   await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
   const after = await refreshed;
@@ -73,15 +104,16 @@ test("a panel read ahead and its unchanged refresh are logged as background", as
   // A running job's time moves with its work thread (threads.ts jobTime), and a turn an earlier spec on this server started there, such as
   // duties.spec's Add duty DM, may still answer, so the jobs answer may change between the two reads; such a refresh is one he waited for.
   reads.forEach((path, i) => {
-    const refresh = live.includes(path) ? [] : [before[i] === after[i] ? "shown" : "waited"];
-    expect(samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited"), path).toEqual(["ahead", ...refresh]);
+    expect(samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited"), path).toEqual(["ahead", before[i] === after[i] ? "shown" : "waited"]);
   });
-  expect(before[0], "the board answer stays the same").toBe(after[0]);
+  // The board and duties read ahead over the socket or over HTTP, and the socket kept them current, so his open waited on neither.
+  for (const path of live) expect(samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited"), path).not.toContain("waited");
 });
 
 test("a reload shows the board, its duties and check-in from the answers the last load kept, while their reads hang", async ({ page }) => {
   const board = `#/board/${HARNESS_AGENT}`;
-  const read = Promise.all(panelReads.filter((path) => !path.endsWith("/config")).map((path) => page.waitForResponse((r) => new URL(r.url()).pathname === path, { timeout: 20_000 })));
+  const socket = socketAnswers(page);
+  const read = Promise.all(panelReads.filter((path) => !path.endsWith("/config")).map((path) => firstAnswer(page, socket, path)));
   await page.goto(`/${board}`);
   await read;
   await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
@@ -93,11 +125,13 @@ test("a reload shows the board, its duties and check-in from the answers the las
     if (route.request().method() !== "GET") return route.fallback();
     asked.push(new URL(route.request().url()).pathname);
   });
+  const checked = socket.get(`${AGENT}/board`)?.length ?? 0;
   await page.reload();
   await expect(page.getByRole("region", { name: "For you" })).toContainText("Pick the day for the production cutover.");
   await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime");
   await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
-  await expect.poll(() => asked).toContain(`${AGENT}/board`);
+  // The reload checks the kept board, over HTTP or over the socket with its tag.
+  await expect.poll(() => asked.includes(`${AGENT}/board`) || (socket.get(`${AGENT}/board`)?.length ?? 0) > checked).toBe(true);
 });
 
 test("a board the socket kept current opens again with no read of it or its duties, and shows a step added while it was closed", async ({ page, request, chatServer }) => {

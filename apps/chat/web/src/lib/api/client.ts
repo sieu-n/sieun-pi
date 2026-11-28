@@ -441,6 +441,14 @@ function laned<T>(wait: Wait, path: string, attempt: (signal: AbortSignal | unde
   });
 }
 
+/** Runs `read` in the lane as the call `wait` names, such as a read ahead over the live socket (kept.svelte.ts), noting when it left. */
+export function laneTask<T>(wait: Wait, path: string, read: () => Promise<T>): Promise<T> {
+  return laned(wait, path, () => {
+    wait.sent = performance.now();
+    return read();
+  });
+}
+
 /** How much a call is his: a read ahead, a refresh behind a shown page, or a call he waits on. */
 const rank = (background: Wait["background"]): number => (background === "ahead" ? 0 : background === "shown" ? 1 : 2);
 

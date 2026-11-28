@@ -64,6 +64,11 @@ class Live {
   openedAt = Infinity;
   /** How many times the socket has opened since the page loaded. */
   opens = 0;
+
+  /** Whether a socket is open now, so a `read` over it can go. */
+  get open(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
   /** The open socket, and the one try on its way while there is none. */
   private socket: WebSocket | null = null;
   private trying: WebSocket | null = null;

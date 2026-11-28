@@ -11,7 +11,7 @@
  * panel that already showed the kept answer and got the same one back, and a wait for a first read or a refresh that changed the panel.
  */
 import { untrack } from "svelte";
-import { afterWrite, get, reads, takeOver, type Read, type Wait } from "./client.ts";
+import { afterWrite, get, laneTask, reads, takeOver, type Read, type Wait } from "./client.ts";
 import { live, UNCHANGED } from "./live.svelte.ts";
 import { answerTag } from "./shared/answer-tag.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
@@ -88,13 +88,23 @@ export class Kept<T> {
       return this.flight.read;
     }
     const wait: Wait = background ? { background } : {};
+    // A board or duties read ahead goes over the live socket with the kept answer's tag, so an unchanged one costs no body and a big one
+    // rides no connection his calls use: WebKit sends his calls on the page's one HTTP connection, and in a walk on 11-28 at a 200 ms round
+    // trip his small call took 460 ms behind two 31 KB answers and 670 to 870 ms behind two 121 KB ones (~/work/p155-own-waits/abort-*.log).
+    const overSocket = background === "ahead" && !!this.of.live && live.open;
+    const tag = overSocket && this.value !== null ? answerTag(this.value) : undefined;
     let unplaced = false;
     const flight: Flight<T> = {
       wait,
       changes: [],
-      read: get(this.of, wait).then(answer => {
+      read: (overSocket ? laneTask<T | typeof UNCHANGED>(wait, this.of.path, () => live.read(this.of.path, tag) as Promise<T | typeof UNCHANGED>).catch(() => get(this.of, wait)) : get(this.of, wait)).then(answer => {
         if (this.flight !== flight) return;
         this.sent = wait.sent ?? -Infinity;
+        if (answer === UNCHANGED) {
+          this.error = null;
+          this.current = true;
+          return;
+        }
         // An event that came while the read was on its way may be newer than the answer, so it goes on top of it, in order.
         let next = answer;
         for (const change of flight.changes) {

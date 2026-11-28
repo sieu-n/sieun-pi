@@ -29,7 +29,8 @@ const WRAP = () => {
     override set onmessage(handler: ((event: MessageEvent) => void) | null) {
       super.onmessage = handler && ((event: MessageEvent) => {
         const text = String(event.data);
-        if (w.__holdBoards && text.startsWith('{"type":"board"')) return;
+        // A page whose socket is down gets no board event and no board read ahead over it either (kept.svelte.ts reads ahead there).
+        if (w.__holdBoards && (text.startsWith('{"type":"board"') || (text.startsWith('{"type":"answer"') && text.includes('"board":')))) return;
         w.__frames.push({ out: false, text });
         handler.call(this, event);
       });
@@ -113,7 +114,8 @@ test("a reopen brings a board change the page missed while its socket was down",
   await page.waitForLoadState("networkidle");
   // The page misses the change's event, as a page whose socket was down does.
   await page.evaluate(() => { (window as unknown as { __holdBoards: boolean }).__holdBoards = true; });
-  const step = "Move the night alerts to the pager channel.";
+  // kept-panels.spec and board-event-delta.spec add a step of the same words on this worker's server, so this one names its own.
+  const step = "Move the night alerts to the reopen pager channel.";
   expect((await request.post(`${chatServer}${AGENT}/board`, { data: { actor: "agent", ops: [{ op: "plan_add", text: step }] } })).ok()).toBe(true);
   await page.waitForTimeout(500);
   await expect(page.getByText(step)).toHaveCount(0);
@@ -150,4 +152,32 @@ test("a board closed during a reopen opens again over the socket with no answer 
     const [read] = await socketReads(page, path, from);
     expect(read?.same, path).toBe(true);
   }
+});
+
+// WebKit sends his calls on the page's one HTTP connection, so a board read ahead there delayed his next call: at a 200 ms round trip his
+// small call took 670 to 870 ms behind two 121 KB answers (~/work/p155-own-waits/abort-*.log). A read ahead now goes over the socket.
+test("a reload reads the kept board and duties ahead over the socket with no answer when they did not change, and none over HTTP", async ({ page }) => {
+  await page.addInitScript(WRAP);
+  await page.goto(`/#/agents`);
+  await expect(page.locator(`[role="gridcell"][data-agent-id="${HARNESS_AGENT}"]`)).toBeVisible({ timeout: 20_000 });
+  await page.waitForLoadState("networkidle");
+  // The answers are stored for the next load once the page is idle.
+  await page.waitForTimeout(1_500);
+  const reads: string[] = [];
+  page.on("request", r => {
+    const path = new URL(r.url()).pathname;
+    if (r.method() === "GET" && (path === `${AGENT}/board` || path === `${AGENT}/duties`)) reads.push(path);
+  });
+  await page.reload();
+  await expect(page.locator(`[role="gridcell"][data-agent-id="${HARNESS_AGENT}"]`)).toBeVisible({ timeout: 20_000 });
+  await expect.poll(async () => (await socketReads(page, `${AGENT}/board`, 0)).filter(read => "same" in read || "value" in read), { timeout: 15_000 }).toHaveLength(1);
+  await expect.poll(async () => (await socketReads(page, `${AGENT}/duties`, 0)).filter(read => "same" in read || "value" in read), { timeout: 15_000 }).toHaveLength(1);
+  await page.waitForLoadState("networkidle");
+  expect(reads).toEqual([]);
+  for (const path of [`${AGENT}/board`, `${AGENT}/duties`]) {
+    const [read] = await socketReads(page, path, 0);
+    expect(read?.tag, path).toBeTruthy();
+  }
+  // The board did not change, so its answer came with no body. A duty's card moves with the clock, so the duties may come whole.
+  expect((await socketReads(page, `${AGENT}/board`, 0))[0]?.same).toBe(true);
 });

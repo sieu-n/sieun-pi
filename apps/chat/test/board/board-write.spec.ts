@@ -125,9 +125,14 @@ test("a refresh of a board the page built from a write's answer counts as no wai
       if (!(holding && text.startsWith('{"type":"board"'))) route.send(text);
     });
     upstream.on("close", () => void route.close().catch(() => undefined));
-    route.onMessage(message => (upstream.readyState === WebSocket.OPEN ? upstream.send(message) : early.push(String(message))));
+    route.onMessage(message => {
+      const command = JSON.parse(String(message)) as { type: string; path?: string };
+      if (command.type === "read" && command.path === `/api/agents/${HARNESS_AGENT}/board`) socketReads += 1;
+      return upstream.readyState === WebSocket.OPEN ? upstream.send(message) : early.push(String(message));
+    });
     route.onClose(() => upstream.close());
   });
+  let socketReads = 0;
   await page.goto(`/#/board/${HARNESS_AGENT}`);
   const region = page.getByRole("region", { name: "For you" });
   await expect(region).toContainText("Pick the day for the production cutover.");
@@ -135,13 +140,16 @@ test("a refresh of a board the page built from a write's answer counts as no wai
   holding = true;
   await answer(page, region);
   const lines = await linesFromNow(page);
-  // A reopen in the same load reads no board the socket kept current (kept.svelte.ts `open`), so a reload's open refreshes the kept board.
-  const read = page.waitForResponse(r => r.request().method() === "GET" && new URL(r.url()).pathname === `/api/agents/${HARNESS_AGENT}/board`);
+  // A reopen in the same load reads no board the socket kept current (kept.svelte.ts `open`), so a reload refreshes the kept board: over HTTP
+  // as a shown refresh, or over the socket, where a board read ahead goes, with no line.
+  let httpReads = 0;
+  page.on("request", r => { if (r.method() === "GET" && new URL(r.url()).pathname === `/api/agents/${HARNESS_AGENT}/board`) httpReads += 1; });
+  const before = socketReads;
   await page.reload();
-  await read;
-  await page.waitForTimeout(500);
+  await expect.poll(() => httpReads + socketReads - before).toBeGreaterThan(0);
+  await page.waitForTimeout(1_000);
   const board = (await lines()).filter(line => line.m === "GET" && line.p === `/api/agents/${HARNESS_AGENT}/board`).map(line => line.bg ?? "waited");
-  expect(board).toEqual(["shown"]);
+  expect(board).toEqual(httpReads ? ["shown"] : []);
 });
 
 test("the board the page keeps after a write is the board a read answers", async ({ page, request, chatServer }) => {
