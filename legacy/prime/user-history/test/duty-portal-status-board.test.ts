@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { UNMEASURED } from "../scripts/duties/estate-reads.ts";
 import { ROUTE_P90_TARGET_S } from "../scripts/duties/customer-api-failures.ts";
-import { checkPanels, endpointSql, functionHoursSql, lastUtcDay, p90TargetS, panelSpanMs, report } from "../scripts/duties/portal-status-board.ts";
+import { billedDay, checkPanels, endpointSql, p90TargetS, panelSpanMs, report, type Charge } from "../scripts/duties/portal-status-board.ts";
 
 test("an endpoint counts as slow over 15 s p90 and as failing over 5% of its calls failed on our side", () => {
   const out = report([
@@ -60,16 +60,26 @@ test("n is the customer calls behind the endpoint rows and the panels checked, a
   assert.deepEqual(empty.flagged!.map(slice => slice.kind), ["no_calls", "no_panels"]);
 });
 
-// auto-sns-agent p243: prod api-portal billed 64 to 77 function hours a day before 11-27 and 12.83 h over the 24 h to 06:42Z on 11-28.
-test("function_hours_day reads the last full UTC day's billed hours, flags a day over 8 h, and reads unmeasured when the read failed", () => {
-  const over = report([], [], [], { hours: 12.83, calls: 111_155, day: "2026-11-27" });
-  assert.equal(over.metrics.function_hours_day, 12.83);
-  assert.equal(over.n.function_hours_day, 111_155);
-  assert.match(over.flagged!.find(slice => slice.kind === "function_time")!.excerpt, /billed 12.83 function hours on 2026-11-27 over 111155 calls, against 8 h/);
-  const under = report([], [], [], { hours: 5.1, calls: 40_000, day: "2026-11-29" });
+// auto-sns-agent p243: summed REPORT durations read 10.18 h (20.35 GB-h) for the billing day from 08:00Z 11-27, while Vercel billed 15.40 GB-h.
+test("function_hours_day reads Vercel's billed Fluid GB-hours of auto-sns-api over its newest ended billing day, flags one over 8 h", () => {
+  const row = (start: string, end: string, service: string, quantity: number, project = "auto-sns-api"): Charge =>
+    ({ ServiceName: service, ConsumedQuantity: quantity, ChargePeriodStart: start, ChargePeriodEnd: end, Tags: { ProjectName: project } });
+  const charges = [
+    row("2026-11-26T08:00:00.000Z", "2026-11-27T08:00:00.000Z", "Fluid Provisioned Memory", 37.154),
+    row("2026-11-27T08:00:00.000Z", "2026-11-28T08:00:00.000Z", "Fluid Provisioned Memory", 15.4),
+    row("2026-11-27T08:00:00.000Z", "2026-11-28T08:00:00.000Z", "Fluid Active CPU", 0.733),
+    row("2026-11-27T08:00:00.000Z", "2026-11-28T08:00:00.000Z", "Function Invocations", 106_828.6),
+    row("2026-11-27T08:00:00.000Z", "2026-11-28T08:00:00.000Z", "Fluid Provisioned Memory", 99, "auto-sns-search"),
+    row("2026-11-28T08:00:00.000Z", "2026-11-29T08:00:00.000Z", "Fluid Provisioned Memory", 3),
+  ];
+  const day = billedDay(charges, Date.parse("2026-11-28T09:00:00Z"))!;
+  assert.deepEqual(day, { start: "2026-11-27T08:00:00.000Z", gbHours: 15.4, cpuHours: 0.733, invocations: 106_829 });
+  const under = report([], [], [], day);
+  assert.equal(under.metrics.function_hours_day, 7.7);
+  assert.equal(under.n.function_hours_day, 106_829);
   assert.equal(under.flagged!.some(slice => slice.kind === "function_time"), false);
-  assert.equal(report([], [], ["function: Grafana HTTP 500"], null).metrics.function_hours_day, UNMEASURED);
-  assert.deepEqual(lastUtcDay(Date.parse("2026-11-28T06:42:00Z")), [Date.parse("2026-11-27T00:00:00Z"), Date.parse("2026-11-28T00:00:00Z")]);
-  assert.match(functionHoursSql(), /ServiceName = 'api-portal' AND LogAttributes\['vercel.environment'\] = 'production'/);
-  assert.match(functionHoursSql(), /Billed Duration/);
+  const over = report([], [], [], billedDay(charges, Date.parse("2026-11-27T09:00:00Z")));
+  assert.equal(over.metrics.function_hours_day, 18.577);
+  assert.match(over.flagged!.find(slice => slice.kind === "function_time")!.excerpt, /Vercel billed auto-sns-api 18.577 instance hours \(37.15 GB-h/);
+  assert.equal(report([], [], ["function: Vercel billing charges answered 403"], null).metrics.function_hours_day, UNMEASURED);
 });

@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { ROUTE_P90_TARGET_S } from "./customer-api-failures.ts";
 import { DAY, GRAFANA, UNMEASURED, readGrafanaAuth } from "./estate-reads.ts";
+import { vercelToken } from "./vercel-login.ts";
 
 /**
  * The api-portal agent's "API status board" precheck (`node --import tsx scripts/duties/portal-status-board.ts`). No model call, reads only.
@@ -13,8 +14,8 @@ import { DAY, GRAFANA, UNMEASURED, readGrafanaAuth } from "./estate-reads.ts";
  * - slow_endpoints_24h, the endpoints whose p90 over real customers' calls in 24 h is over their own target (p90TargetS),
  * - failing_endpoints_24h, the endpoints where over FAILED_PCT of those calls failed on our side,
  * - broken_panels_24h, the live board's panels whose query errors or answers nothing over 24 h,
- * - function_hours_day, prod api-portal's Vercel function time over the last full UTC day: the sum of the Billed Duration of the drain's REPORT
- *   lines in otel.otel_logs. It ran 64 to 77 h a day before 11-27 and 12.83 h over the 24 h to 06:42Z on 11-28 (auto-sns-agent p243).
+ * - function_hours_day, the Fluid instance hours Vercel billed prod api-portal (project auto-sns-api) over its newest ended billing day:
+ *   provisioned memory GB-hours from Vercel's charges API over the 2 GB function size, held to 8 h (auto-sns-agent p243).
  * Customer calls are keyed `crawl_read` rows of product.customer_usage_events, the view that leaves out every org of auto-sns-agent
  * convex/org/houseOrgs.json, less the org_test_ orgs a prod proof makes as paying customers: the filter of the alert
  * api-portal-customer-calls-failing and board 52 (auto-sns-agent b046150074). On 11-25 one proof org ran 20 of the day's 21 Bing calls. The board and
@@ -42,8 +43,32 @@ export const OUR_4XX = ["rate_limited", "crawl_unpaid_paused", "not_cached", "ta
 
 /** The function hours a day prod api-portal may bill: auto-sns-agent step p243's target, set by the API portal chat on 11-26. */
 export const FUNCTION_HOURS_TARGET = 8;
-/** The function hours and calls of prod api-portal over one full UTC day, from the Vercel drain's REPORT lines. */
-export interface FunctionTime { hours: number; calls: number; day: string }
+/** Vercel's project for api.virev.ai and its team; the functions run at 2048 MB (the REPORT lines' Memory Size). */
+export const VERCEL_PROJECT = "auto-sns-api";
+export const VERCEL_TEAM = "team_HkFeqFbbJa5UAIjN0IYINUS0";
+export const FUNCTION_MEMORY_GB = 2;
+/** One Vercel billing day of the project: what Vercel bills Fluid compute on (provisioned memory and active CPU), and its invocations. */
+export interface FunctionTime { start: string; gbHours: number; cpuHours: number; invocations: number }
+/** A row of Vercel's FOCUS charges export (GET /v1/billing/charges, application/jsonl). */
+export interface Charge { ServiceName: string; ConsumedQuantity: number; ChargePeriodStart: string; ChargePeriodEnd: string; Tags?: Record<string, string> | null }
+
+/**
+ * The project's newest billing day that ended by `now`. Vercel bills Fluid compute as provisioned memory GB-hours and active CPU hours,
+ * and its charge days run 08:00Z to 08:00Z. Summing each call's Billed Duration overstates the bill, because Fluid serves concurrent calls on
+ * one instance: for the day from 08:00Z 11-27 it read 10.18 h (20.35 GB-h at 2 GB) against Vercel's 15.40 GB-h, and for the day before 35.18 h
+ * against 37.15 GB-h.
+ */
+export function billedDay(charges: readonly Charge[], now: number): FunctionTime | null {
+  const mine = charges.filter(row => row.Tags?.ProjectName === VERCEL_PROJECT && Date.parse(row.ChargePeriodEnd) <= now);
+  const start = mine.map(row => row.ChargePeriodStart).sort().at(-1);
+  if (!start) return null;
+  const sum = (service: string): number => mine.filter(row => row.ChargePeriodStart === start && row.ServiceName === service)
+    .reduce((total, row) => total + row.ConsumedQuantity, 0);
+  return { start, gbHours: sum("Fluid Provisioned Memory"), cpuHours: sum("Fluid Active CPU"), invocations: Math.round(sum("Function Invocations")) };
+}
+
+/** The billed instance hours of a billing day: its provisioned memory GB-hours over the functions' memory size. */
+export const instanceHours = (day: FunctionTime): number => Math.round((1000 * day.gbHours) / FUNCTION_MEMORY_GB) / 1000;
 
 export interface EndpointRow { endpoint: string; calls: number; oursFailed: number; p90S: number; topError: string; lastMs: number }
 export interface PanelCheck { id: number; title: string; problem?: "error" | "no_data"; detail?: string }
@@ -60,20 +85,6 @@ export const endpointSql = (): string => [
   `WHERE $__timeFilter(ts) AND action = 'crawl_read' AND api_key_id != '' AND NOT startsWith(org_id, ${quote(PROOF_ORG_PREFIX)})`,
   `GROUP BY endpoint HAVING calls >= ${MIN_CALLS} ORDER BY p90_s DESC`,
 ].join("\n");
-
-/** Prod api-portal's billed function time over Grafana's range, one REPORT line per invocation. */
-export const functionHoursSql = (): string => [
-  "SELECT round(sum(toFloat64OrZero(extract(Body, 'Billed Duration: ([0-9]+) ms'))) / 3600000, 3) AS hours, count() AS calls",
-  "FROM otel.otel_logs",
-  "WHERE $__timeFilter(Timestamp) AND ServiceName = 'api-portal' AND LogAttributes['vercel.environment'] = 'production'",
-  "AND Body LIKE '%REPORT RequestId%'",
-].join("\n");
-
-/** The last full UTC day before `now`, as [from, to) epoch ms. */
-export const lastUtcDay = (now: number): [number, number] => {
-  const to = Math.floor(now / DAY) * DAY;
-  return [to - DAY, to];
-};
 
 /**
  * The precheck output with `n`, what each duty metric read (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts): the
@@ -94,7 +105,7 @@ export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string
     slow_endpoints_24h: sourceDown("endpoints") ? UNMEASURED : slow.length,
     failing_endpoints_24h: sourceDown("endpoints") ? UNMEASURED : failing.length,
     broken_panels_24h: sourceDown("board") ? UNMEASURED : broken.length,
-    function_hours_day: sourceDown("function") || !fn ? UNMEASURED : fn.hours,
+    function_hours_day: sourceDown("function") || !fn ? UNMEASURED : instanceHours(fn),
   };
   const flagged: FlaggedSlice[] = [
     ...slow.map(row => ({ kind: "slow_endpoint", excerpt: line(row) })),
@@ -102,13 +113,14 @@ export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string
     ...broken.map(panel => ({ kind: `panel_${panel.problem}`, excerpt: `Panel ${panel.id} "${panel.title}" on https://obs.virev.ai/d/${BOARD_UID}: ${panel.detail ?? panel.problem}`.slice(0, 300) })),
     ...errors.map(error => ({ kind: "source_error", excerpt: error.slice(0, 300) })),
   ];
-  if (fn && !sourceDown("function") && fn.hours > FUNCTION_HOURS_TARGET)
-    flagged.push({ kind: "function_time", excerpt: `Prod api-portal billed ${fn.hours} function hours on ${fn.day} over ${fn.calls} calls, against ${FUNCTION_HOURS_TARGET} h.` });
+  if (fn && !sourceDown("function") && instanceHours(fn) > FUNCTION_HOURS_TARGET)
+    flagged.push({ kind: "function_time", excerpt: `Vercel billed ${VERCEL_PROJECT} ${instanceHours(fn)} instance hours (${Math.round(fn.gbHours * 100) / 100} GB-h, ` +
+      `${Math.round(fn.cpuHours * 100) / 100} h active CPU) over ${fn.invocations} invocations on the billing day from ${fn.start}, against ${FUNCTION_HOURS_TARGET} h.` });
   const calls = sourceDown("endpoints") ? 0 : rows.reduce((sum, row) => sum + row.calls, 0);
   if (!sourceDown("endpoints") && !calls) flagged.push({ kind: "no_calls", excerpt: `No endpoint had ${MIN_CALLS} or more customer calls in 24 h, so slow_endpoints_24h and failing_endpoints_24h read 0 calls and measured nothing.` });
   if (!sourceDown("board") && !panels.length) flagged.push({ kind: "no_panels", excerpt: `The board ${BOARD_UID} has no panel with a query, so broken_panels_24h read 0 panels and measured nothing.` });
   const n = { slow_endpoints_24h: calls, failing_endpoints_24h: calls, broken_panels_24h: sourceDown("board") ? 0 : panels.length,
-    function_hours_day: fn && !sourceDown("function") ? fn.calls : 0 };
+    function_hours_day: fn && !sourceDown("function") ? fn.invocations : 0 };
   const lastEventAt: Record<string, number> = {};
   const slowAt = newest(slow);
   const failingAt = newest(failing);
@@ -203,11 +215,13 @@ export async function measure(now: number): Promise<StatusBoardOutput> {
   } catch (error) { errors.push(`endpoints: ${error instanceof Error ? error.message : String(error)}`); }
   let fn: FunctionTime | null = null;
   try {
-    const [from, to] = lastUtcDay(now);
-    const answer = await query({ datasource: CLICKHOUSE, rawSql: functionHoursSql(), format: 1 }, from, to);
-    if ("error" in answer) throw new Error(answer.error);
-    const row = frameRows(answer.frames)[0];
-    fn = { hours: Number(row?.hours ?? 0), calls: Number(row?.calls ?? 0), day: new Date(from).toISOString().slice(0, 10) };
+    const from = new Date(now - 3 * DAY).toISOString();
+    const response = await fetch(`https://api.vercel.com/v1/billing/charges?teamId=${VERCEL_TEAM}&from=${from}&to=${new Date(now).toISOString()}`,
+      { headers: { Authorization: `Bearer ${await vercelToken()}` }, signal: AbortSignal.timeout(60_000) });
+    if (!response.ok) throw new Error(`Vercel billing charges answered ${response.status}`);
+    const charges = (await response.text()).split("\n").filter(line => line.trim()).map(line => JSON.parse(line) as Charge);
+    fn = billedDay(charges, now);
+    if (!fn) throw new Error(`Vercel billing charges hold no ended day for ${VERCEL_PROJECT}`);
   } catch (error) { errors.push(`function: ${error instanceof Error ? error.message : String(error)}`); }
   try {
     const response = await fetch(`${VIEWER}/api/dashboards/uid/${BOARD_UID}`, { headers: { authorization: auth }, signal: AbortSignal.timeout(30_000) });
