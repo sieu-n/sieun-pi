@@ -260,6 +260,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | Call | Endpoint | Returns |
 |---|---|---|
 | `accountsApi.view({thread, model, fresh})` | `GET /api/accounts?thread=&model=&fresh=1` | `AccountsView` of the thread's tree, or of no thread; `sessionId` is the tree and `priority` its class. |
+| `accountsView({thread, model}, fresh)` (views.ts) | `GET /api/accounts/views?thread=&model=&thread=&model=` | `{views: AccountsView[]}`, one per `thread` and `model` pair in the order asked, each as `GET /api/accounts` answers it; the account chips asked for in one task go as this one call. |
 | `accountsApi.action(action)` | `POST /api/accounts` | An `AccountAction` (`use`, `follow`, `pin`, `unpin`, `switch`, `disable`, `enable`, `remove`, `resets`, `reset`, `recheck`); `use` and `follow` name the thread in `id`. It answers that thread's `AccountsView`, or the pool's with the action's `notice`. |
 | `accountsApi.priority(thread, priority)` | `POST /api/accounts/priority` | `{thread, priority}` with high, normal or low; the thread's `AccountsView`. |
 | `accountsApi.rename(provider, account, name)` | `POST /api/accounts/name` | `{provider, account, name}` sets the name sw factory shows for an account, kept in `<dataDir>/account-names.json` because pi-pool keeps no name; a null or empty `name` clears it. It answers the pool's `AccountsView`, where each row carries `name`. |

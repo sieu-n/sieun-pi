@@ -10,6 +10,7 @@
   import AccountPicker from "./AccountPicker.svelte";
   import { READ_AGAIN_MS } from "$lib/api/read-ahead";
   import { accountsApi } from "./api";
+  import { accountsView } from "./views";
   import { PROVIDER_LABEL, resetText, resolutionSentence, resolvedAccount, shownWindows, threadProvider, windowLabel } from "./model";
   import UsageMeters from "./UsageMeters.svelte";
 
@@ -76,9 +77,9 @@
   );
   const value = $derived(choosing ? (choosingManual ? (choice?.id ?? null) : null) : selection?.mode === "manual" ? selection.account_id : null);
 
-  async function load(id: string | null, forModel: string | null): Promise<void> {
+  async function load(id: string | null, forModel: string | null, fresh = false): Promise<void> {
     try {
-      const next = await accountsApi.view({ thread: id, model: forModel });
+      const next = await accountsView({ thread: id, model: forModel }, fresh);
       if (id === threadId && forModel === modelId) {
         view = next;
         failed = false;
@@ -102,7 +103,7 @@
     failed = false;
     void load(id, forModel);
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void load(id, forModel);
+      if (document.visibilityState === "visible") void load(id, forModel, true);
     }, READ_AGAIN_MS);
     return () => clearInterval(timer);
   });
@@ -120,7 +121,7 @@
         next ? { action: "use", provider: provider.provider, account: next, id: thread } : { action: "follow", provider: provider.provider, id: thread },
       );
       if (answer.notice) toast.show(answer.notice);
-      await load(thread, modelId);
+      await load(thread, modelId, true);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The account did not change");
     } finally {

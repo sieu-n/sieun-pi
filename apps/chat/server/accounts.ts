@@ -212,6 +212,15 @@ export function accountRoutes<R>(app: App, route: (method: string, path: string,
       const thread = q.get("thread");
       return accountsView(thread ? poolTree(app, thread) : null, optional(q.get("model") || null, "model", 256), q.get("fresh") === "1");
     })),
+    // The pools of several threads at once, in the order asked: a channel header shows one account chip per agent member, and on 11-28 an
+    // open of #1124-cost-management read GET /api/accounts three times at once, one round trip each (work/p324-dup-reads/live/r3).
+    route("GET", "/api/accounts/views", handled(async (_r, _p, q) => {
+      const absent = noPool();
+      const threads = q.getAll("thread");
+      const models = q.getAll("model");
+      if (absent) return { views: threads.map(() => absent) };
+      return { views: await Promise.all(threads.map((thread, i) => accountsView(thread ? poolTree(app, thread) : null, optional(models[i] || null, "model", 256), false))) };
+    })),
     route("POST", "/api/accounts/name", handled(async (req, _p, _q, body) => {
       const input = await object(body);
       const provider = text(input.provider, "provider", 64);

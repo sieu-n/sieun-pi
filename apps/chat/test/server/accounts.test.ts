@@ -298,3 +298,14 @@ test("GET /api/accounts/threads lists the threads an account counts, newest firs
   const off = await s.get<{ threads: AccountThread[] }>("/api/accounts/threads?provider=anthropic&account=claude-off");
   assert.deepEqual(off.threads, []);
 });
+
+test("GET /api/accounts/views answers several threads' pools in one call, each as GET /api/accounts answers it", async () => {
+  const ids = ["ag_vent", "dm_vent", "ag_frontend-bro"];
+  const { views } = await s.get<{ views: AccountsView[] }>(`/api/accounts/views?${ids.map(id => `thread=${encodeURIComponent(id)}&model=claude-opus-5-5`).join("&")}`);
+  assert.equal(views.length, 3);
+  for (const [i, id] of ids.entries()) {
+    const one = await s.get<AccountsView>(`/api/accounts?thread=${encodeURIComponent(id)}&model=claude-opus-5-5`);
+    assert.equal(views[i]!.sessionId, one.sessionId, id);
+    assert.deepEqual(provider(views[i]!, "anthropic").resolution, provider(one, "anthropic").resolution, id);
+  }
+});

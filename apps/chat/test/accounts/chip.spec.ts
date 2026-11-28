@@ -180,3 +180,25 @@ test("41 a channel header has one account chip per agent, named by its avatar, a
   const back = await postedAction(page, "/api/accounts", () => picker.getByRole("option", { name: /^Auto/ }).click());
   expect(back.body).toMatchObject({ action: "follow", id: AGENT });
 });
+
+// On 11-28 an open of a channel with three agents read GET /api/accounts three times at once, and a walk of live :5184 read it 12 times in
+// 3 min as it went from room to room (work/p324-dup-reads/live/r3).
+test("a channel's agent chips read the pool in one call, and a room opened again within 100 s reads none", async ({ page }) => {
+  const reads: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "GET" && (url.pathname === "/api/accounts" || url.pathname === "/api/accounts/views")) reads.push(url.pathname + url.search);
+  });
+  await openConversation(page, "ch_cutover");
+  await expect(page.getByTestId("account-chip")).toHaveCount(3);
+  await page.waitForLoadState("networkidle");
+  expect(reads).toHaveLength(1);
+  await page.evaluate(() => { location.hash = "#/c/ch_general"; });
+  await expect(page.getByTestId("account-chip")).toHaveCount(2);
+  await page.evaluate(() => { location.hash = "#/c/ch_cutover"; });
+  await expect(page.getByTestId("account-chip")).toHaveCount(3);
+  await page.waitForLoadState("networkidle");
+  await page.waitForTimeout(500);
+  // ch_general's agents are Vent, read once, and the frontend agent, read with the cutover channel.
+  expect(reads).toHaveLength(2);
+});
